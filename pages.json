@@ -1,0 +1,161 @@
+{
+  "pages": [
+    {
+      "path": "pages/index/index",
+      "style": {
+        "navigationBarTitleText": "珍果链",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/category/index",
+      "style": {
+        "navigationBarTitleText": "分类",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/cart/index",
+      "style": {
+        "navigationBarTitleText": "购物车",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/mine/index",
+      "style": {
+        "navigationBarTitleText": "个人中心",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/address/index",
+      "style": {
+        "navigationBarTitleText": "地址管理",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/profile/detail",
+      "style": {
+        "navigationBarTitleText": "个人信息",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/product/detail",
+      "style": {
+        "navigationBarTitleText": "商品详情",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/order/create",
+      "style": {
+        "navigationBarTitleText": "提交预订",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/order/list",
+      "style": {
+        "navigationBarTitleText": "全部订单",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/verify/index",
+      "style": {
+        "navigationBarTitleText": "客户认证",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/agreement/index",
+      "style": {
+        "navigationBarTitleText": "用户协议"
+      }
+    },
+    {
+      "path": "pages/admin/login/index",
+      "style": {
+        "navigationBarTitleText": "供应商后台登录",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/admin/orders/index",
+      "style": {
+        "navigationBarTitleText": "订单管理",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/admin/stats/index",
+      "style": {
+        "navigationBarTitleText": "销售统计",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/admin/verifications/index",
+      "style": {
+        "navigationBarTitleText": "认证审核",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/admin/fruits/index",
+      "style": {
+        "navigationBarTitleText": "报价管理",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/admin/users/index",
+      "style": {
+        "navigationBarTitleText": "用户管理",
+        "enablePullDownRefresh": true
+      }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "珍果链",
+    "navigationBarBackgroundColor": "#ffffff",
+    "backgroundColor": "#f3f3f3"
+  },
+  "tabBar": {
+    "color": "#777777",
+    "selectedColor": "#ffb000",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "white",
+    "list": [
+      {
+        "pagePath": "pages/index/index",
+        "text": "首页",
+        "iconPath": "static/tabbar/home.png",
+        "selectedIconPath": "static/tabbar/home-active.png"
+      },
+      {
+        "pagePath": "pages/category/index",
+        "text": "分类",
+        "iconPath": "static/tabbar/category.png",
+        "selectedIconPath": "static/tabbar/category-active.png"
+      },
+      {
+        "pagePath": "pages/cart/index",
+        "text": "购物车",
+        "iconPath": "static/tabbar/cart.png",
+        "selectedIconPath": "static/tabbar/cart-active.png"
+      },
+      {
+        "pagePath": "pages/mine/index",
+        "text": "个人中心",
+        "iconPath": "static/tabbar/user.png",
+        "selectedIconPath": "static/tabbar/user-active.png"
+      }
+    ]
+  },
+  "uniIdRouter": {}
+}

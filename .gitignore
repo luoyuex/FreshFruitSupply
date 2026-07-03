@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.env
+
+# Backend runtime uploads
+backend/uploads/*
+!backend/uploads/.gitkeep
+!backend/uploads/customer-verifications/.gitkeep
+!backend/uploads/fruit-images/.gitkeep
+
+# HBuilder / build outputs
+unpackage/
+dist/
+node_modules/

@@ -1,0 +1,14 @@
+ALTER TABLE fruit_categories MODIFY COLUMN icon VARCHAR(64) NULL;
+UPDATE fruit_categories SET icon = 'noto:red-apple' WHERE icon IN ('🍎', 'apple', 'red-apple');
+UPDATE fruit_categories SET icon = 'noto:green-apple' WHERE icon = '🍏';
+UPDATE fruit_categories SET icon = 'noto:tangerine' WHERE icon = '🍊';
+UPDATE fruit_categories SET icon = 'noto:banana' WHERE icon = '🍌';
+UPDATE fruit_categories SET icon = 'noto:mango' WHERE icon = '🥭';
+UPDATE fruit_categories SET icon = 'noto:grapes' WHERE icon = '🍇';
+UPDATE fruit_categories SET icon = 'noto:pear' WHERE icon = '🍐';
+UPDATE fruit_categories SET icon = 'noto:peach' WHERE icon = '🍑';
+UPDATE fruit_categories SET icon = 'noto:strawberry' WHERE icon = '🍓';
+UPDATE fruit_categories SET icon = 'noto:melon' WHERE icon = '🍈';
+UPDATE fruit_categories SET icon = 'noto:cherries' WHERE icon = '🍒';
+UPDATE fruit_categories SET icon = 'noto:lemon' WHERE icon = '🍋';
+UPDATE fruit_categories SET icon = NULL WHERE icon IN ('果', '');

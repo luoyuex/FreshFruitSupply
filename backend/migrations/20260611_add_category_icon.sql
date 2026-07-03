@@ -1,0 +1,1 @@
+ALTER TABLE fruit_categories ADD COLUMN icon VARCHAR(32) NOT NULL DEFAULT '🍎' AFTER name;
