@@ -210,7 +210,7 @@ defineExpose({
 
     <view class="tool-card">
       <view class="tool" @tap="goAddress">
-        <image class="tool-icon" src="/static/icons/map-pin.svg" mode="aspectFit" />
+        <image class="tool-icon" src="/static/icons/map-pin-dark.svg" mode="aspectFit" />
         <text>地址管理</text>
       </view>
       <view class="tool" @tap="goVerify">
@@ -218,7 +218,7 @@ defineExpose({
         <text>认证资料</text>
       </view>
       <view class="tool" @tap="goAgreement">
-        <image class="tool-icon" src="/static/icons/file-text.svg" mode="aspectFit" />
+        <image class="tool-icon" src="/static/icons/file-text-dark.svg" mode="aspectFit" />
         <text>用户协议</text>
       </view>
     </view>
@@ -438,7 +438,7 @@ defineExpose({
   flex-direction: column;
   align-items: center;
   gap: 14rpx;
-  color: #777;
+  color: #333;
   font-size: 25rpx;
 }
 

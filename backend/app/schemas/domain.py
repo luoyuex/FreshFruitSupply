@@ -114,6 +114,8 @@ class CustomerAddressOut(BaseModel):
     detail_address: str
     delivery_note: str | None = None
     is_default: bool
+    latitude: float | None = None
+    longitude: float | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -127,6 +129,8 @@ class CustomerAddressUpsert(BaseModel):
     detail_address: str
     delivery_note: str | None = None
     is_default: bool = False
+    latitude: float | None = None
+    longitude: float | None = None
 
 
 class VerificationOut(BaseModel):

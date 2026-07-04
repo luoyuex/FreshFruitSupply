@@ -45,6 +45,8 @@ class CustomerAddress(TimestampMixin, Base):
     detail_address: Mapped[str] = mapped_column(String(255))
     delivery_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    latitude: Mapped[float | None] = mapped_column(Numeric(10, 7), nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Numeric(10, 7), nullable=True)
 
     customer: Mapped[Customer] = relationship(back_populates='addresses')
 

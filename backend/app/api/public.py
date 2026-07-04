@@ -119,6 +119,8 @@ def _apply_address_payload(address: CustomerAddress, payload: CustomerAddressUps
     address.detail_address = payload.detail_address
     address.delivery_note = payload.delivery_note
     address.is_default = payload.is_default
+    address.latitude = payload.latitude
+    address.longitude = payload.longitude
 
 
 @router.get('/categories', response_model=list[FruitCategoryOut])

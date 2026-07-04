@@ -189,9 +189,25 @@ defineExpose({
 
       <view class="goods-panel">
         <view v-if="error" class="notice">后端连接失败，请确认 Python 服务和数据库已启动</view>
-        <view v-if="loading" class="notice">加载商品中...</view>
 
-        <scroll-view scroll-y class="goods-scroll">
+        <!-- 骨架屏 -->
+        <view v-if="loading" class="goods-scroll">
+          <view v-for="i in 5" :key="i" class="goods-row">
+            <view class="goods-img skeleton"></view>
+            <view class="goods-info">
+              <view class="goods-name skeleton"></view>
+              <view class="goods-desc skeleton"></view>
+              <view class="goods-status skeleton"></view>
+              <view class="price-line">
+                <view class="goods-price skeleton"></view>
+                <view class="verified-price skeleton"></view>
+              </view>
+            </view>
+            <view class="add skeleton"></view>
+          </view>
+        </view>
+
+        <scroll-view v-else scroll-y class="goods-scroll">
           <view v-for="fruit in visibleFruits" :key="fruit.id" class="goods-row" @tap="goDetail(fruit)">
             <view class="goods-img">
               <image v-if="primaryImage(fruit)" class="goods-image" :src="primaryImage(fruit)" mode="aspectFill" />
@@ -470,5 +486,39 @@ defineExpose({
   color: #fff;
   background: #f20d2f;
   font-size: 20rpx;
+}
+
+/* 骨架屏样式 */
+.goods-row .skeleton {
+  border-radius: 16rpx;
+}
+.goods-row .goods-img.skeleton {
+  border-radius: 20rpx;
+}
+.goods-row .goods-name.skeleton {
+  height: 44rpx;
+  width: 100%;
+  border-radius: 8rpx;
+}
+.goods-row .goods-desc.skeleton,
+.goods-row .goods-status.skeleton {
+  margin-top: 8rpx;
+  height: 32rpx;
+  width: 80%;
+  border-radius: 8rpx;
+}
+.goods-row .goods-price.skeleton {
+  height: 44rpx;
+  width: 140rpx;
+  border-radius: 8rpx;
+}
+.goods-row .verified-price.skeleton {
+  margin-top: 4rpx;
+  height: 28rpx;
+  width: 180rpx;
+  border-radius: 8rpx;
+}
+.goods-row .add.skeleton {
+  border-radius: 18rpx;
 }
 </style>

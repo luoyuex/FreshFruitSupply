@@ -20,6 +20,8 @@ const form = reactive({
   detailAddress: '',
   deliveryNote: '',
   isDefault: false,
+  latitude: null,
+  longitude: null,
 })
 
 function resetForm() {
@@ -33,6 +35,8 @@ function resetForm() {
     detailAddress: '',
     deliveryNote: '',
     isDefault: addresses.value.length === 0,
+    latitude: null,
+    longitude: null,
   })
 }
 
@@ -67,6 +71,8 @@ function openModal(address = null) {
       detailAddress: address.detail_address,
       deliveryNote: address.delivery_note || '',
       isDefault: address.is_default,
+      latitude: address.latitude ?? null,
+      longitude: address.longitude ?? null,
     })
   }
   modalVisible.value = true
@@ -75,6 +81,70 @@ function openModal(address = null) {
 function closeModal() {
   modalVisible.value = false
   resetForm()
+}
+
+// 从 chooseLocation 返回的整段地址串里正则拆出省/市/区，拆不出的部分留在 detail，绝不丢信息
+function parseRegion(address = '') {
+  const text = String(address || '')
+  const municipalities = ['北京市', '上海市', '天津市', '重庆市']
+  let province = ''
+  let city = ''
+  let district = ''
+  let rest = text
+  const prov = text.match(/^(.+?(?:省|特别行政区|自治区))/)
+  if (prov) {
+    province = prov[1]
+    rest = text.slice(province.length)
+  } else {
+    const muni = municipalities.find((x) => text.startsWith(x))
+    if (muni) {
+      province = muni
+      rest = text.slice(muni.length)
+    }
+  }
+  const cm = rest.match(/^(.+?(?:市|自治州|地区|盟))/)
+  if (cm) {
+    city = cm[1]
+    rest = rest.slice(city.length)
+  } else if (municipalities.includes(province)) {
+    city = province
+  }
+  const dm = rest.match(/^(.+?(?:区|县|旗))/)
+  if (dm) {
+    district = dm[1]
+    rest = rest.slice(district.length)
+  }
+  return { province, city, district, detail: rest.trim() }
+}
+
+function pickLocation() {
+  uni.chooseLocation({
+    success: (res) => {
+      const { province, city, district, detail } = parseRegion(res.address)
+      form.province = province
+      form.city = city
+      form.district = district
+      form.detailAddress = res.name || detail || res.address || ''
+      form.latitude = res.latitude
+      form.longitude = res.longitude
+    },
+    fail: (err) => {
+      const msg = err.errMsg || ''
+      if (msg.includes('cancel')) return
+      if (msg.includes('auth') || msg.includes('deny')) {
+        uni.showModal({
+          title: '需要位置权限',
+          content: '请在设置中允许获取位置后重试',
+          confirmText: '去设置',
+          success: (r) => {
+            if (r.confirm) uni.openSetting()
+          },
+        })
+        return
+      }
+      uni.showToast({ title: '地图选点失败，请手动填写', icon: 'none' })
+    },
+  })
 }
 
 function validate() {
@@ -95,6 +165,8 @@ function toPayload() {
     detail_address: form.detailAddress,
     delivery_note: form.deliveryNote,
     is_default: form.isDefault,
+    latitude: form.latitude,
+    longitude: form.longitude,
   }
 }
 
@@ -148,6 +220,8 @@ async function setDefault(address) {
         detail_address: address.detail_address,
         delivery_note: address.delivery_note,
         is_default: true,
+        latitude: address.latitude,
+        longitude: address.longitude,
       },
     })
     await loadAddresses()
@@ -231,6 +305,12 @@ onPullDownRefresh(async () => {
         </view>
         <input v-model="form.receiverName" class="input" placeholder="收货人" />
         <input v-model="form.receiverPhone" class="input" type="number" placeholder="手机号" />
+        <view class="map-pick" @tap="pickLocation">
+          <text class="map-pick-icon">📍</text>
+          <text class="map-pick-text">从地图选择</text>
+          <text v-if="form.latitude" class="map-pick-done">已定位 ✓</text>
+          <text v-else class="map-pick-arrow">›</text>
+        </view>
         <view class="address-grid">
           <input v-model="form.province" class="input" placeholder="省" />
           <input v-model="form.city" class="input" placeholder="市" />
@@ -276,6 +356,11 @@ onPullDownRefresh(async () => {
 .input { height: 78rpx; }
 .textarea { height: 122rpx; padding-top: 18rpx; }
 .address-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12rpx; }
+.map-pick { display: flex; align-items: center; gap: 10rpx; margin-top: 14rpx; padding: 0 22rpx; height: 78rpx; border-radius: 16rpx; background: #eef7e6; box-sizing: border-box; }
+.map-pick-icon { font-size: 30rpx; }
+.map-pick-text { color: #2f6b23; font-size: 27rpx; font-weight: 700; }
+.map-pick-done { margin-left: auto; color: #2f6b23; font-size: 23rpx; font-weight: 700; }
+.map-pick-arrow { margin-left: auto; color: #9bb58c; font-size: 34rpx; }
 .switch-row { display: flex; align-items: center; justify-content: space-between; margin-top: 18rpx; color: #48613b; font-size: 27rpx; }
 .save-btn { margin-top: 22rpx; height: 80rpx; line-height: 80rpx; border-radius: 999rpx; color: #fff; background: #2f6b23; font-size: 29rpx; font-weight: 900; }
 </style>
