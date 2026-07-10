@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, shallowRef } from 'vue'
+import { computed, getCurrentInstance, nextTick, onMounted, shallowRef, watch } from 'vue'
 import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { useFruitQuotes } from '../../composables/useFruitQuotes.js'
 import { addCartItem, cartCount } from '../../utils/cart.js'
@@ -13,6 +13,21 @@ const cartTotal = shallowRef(0)
 
 const sideCategories = computed(() => [{ name: '全部', id: 'all' }, ...categoryItems.value])
 const isVerified = computed(() => customer.value?.verification_status === 'verified')
+
+const instance = getCurrentInstance()
+const scrollAnchor = shallowRef('')
+const reachedLower = shallowRef(false)
+const nextCategoryReady = shallowRef(false)
+let overscrollBaseY = null
+let lastScrollTop = 0
+const OVERSCROLL_TRIGGER = 55
+
+const nextCategory = computed(() => {
+  const list = sideCategories.value
+  const index = list.findIndex((item) => item.name === activeCategory.value)
+  if (index === -1 || index >= list.length - 1) return null
+  return list[index + 1]
+})
 
 function displayVerifiedPrice(price) {
   return isVerified.value ? `¥${money(price)}` : '???'
@@ -33,6 +48,82 @@ async function loadCustomer() {
 function setCategory(category) {
   activeCategory.value = category
   uni.setStorageSync('active_category', category)
+  resetToTop()
+}
+
+function resetToTop() {
+  reachedLower.value = false
+  nextCategoryReady.value = false
+  lastScrollTop = 0
+  scrollAnchor.value = ''
+  nextTick(() => {
+    scrollAnchor.value = 'goods-top'
+    setTimeout(() => { scrollAnchor.value = '' }, 120)
+  })
+}
+
+// 测量右侧列表内容是否已撑满可视区域：内容不足一屏时视为“已到底”，
+// 这样短列表也能通过上滑切换到下一分类。
+function measureAtBottom() {
+  if (!instance) return
+  nextTick(() => {
+    uni.createSelectorQuery()
+      .in(instance.proxy)
+      .select('.goods-scroll').boundingClientRect()
+      .select('.goods-inner').boundingClientRect()
+      .exec((res) => {
+        const view = res && res[0]
+        const inner = res && res[1]
+        if (view && inner && inner.height) {
+          reachedLower.value = inner.height <= view.height + 2
+        }
+      })
+  })
+}
+
+// 搜索状态下列表不按分类过滤，且必须存在下一个分类、当前已滑到底部才允许切换。
+function canSwitchNext() {
+  return !keyword.value.trim() && !!nextCategory.value && reachedLower.value
+}
+
+function onGoodsScroll(event) {
+  const top = event.detail.scrollTop
+  if (top < lastScrollTop - 8) reachedLower.value = false
+  lastScrollTop = top
+}
+
+function onScrollLower() {
+  reachedLower.value = true
+}
+
+function onGoodsTouchStart() {
+  overscrollBaseY = null
+}
+
+function onGoodsTouchMove(event) {
+  const point = event.touches && event.touches[0]
+  if (!point) return
+  if (!canSwitchNext()) {
+    overscrollBaseY = null
+    if (nextCategoryReady.value) nextCategoryReady.value = false
+    return
+  }
+  // 到底后开始计量“越界”上滑距离（从到底那一刻的手指位置算起，避免把正常滚动距离算进来）。
+  if (overscrollBaseY === null) {
+    overscrollBaseY = point.clientY
+    return
+  }
+  const distance = overscrollBaseY - point.clientY
+  const ready = distance >= OVERSCROLL_TRIGGER
+  if (ready !== nextCategoryReady.value) nextCategoryReady.value = ready
+}
+
+function onGoodsTouchEnd() {
+  if (nextCategoryReady.value && canSwitchNext()) {
+    setCategory(nextCategory.value.name)
+  }
+  nextCategoryReady.value = false
+  overscrollBaseY = null
 }
 
 function primaryImage(fruit) {
@@ -58,11 +149,16 @@ onMounted(() => {
   loadCustomer()
 })
 
+watch(() => visibleFruits.value.length, () => {
+  measureAtBottom()
+})
+
 onShow(() => {
   const storedCategory = uni.getStorageSync('active_category')
   if (storedCategory) activeCategory.value = storedCategory
   cartTotal.value = cartCount()
   loadCustomer()
+  measureAtBottom()
 })
 
 onPullDownRefresh(async () => {
@@ -143,25 +239,43 @@ defineExpose({
           </view>
         </view>
 
-        <scroll-view v-else scroll-y class="goods-scroll">
-          <view v-for="fruit in visibleFruits" :key="fruit.id" class="goods-row" @tap="goDetail(fruit)">
-            <view class="goods-img">
-              <image v-if="primaryImage(fruit)" class="goods-image" :src="primaryImage(fruit)" mode="aspectFill" />
-              <text v-else>{{ fruitIcon(fruit.name) }}</text>
-              <view v-if="fruit.stock_status === 'out_of_stock'" class="sold-out-mask">
-                <text class="sold-out-text">售罄</text>
+        <scroll-view
+          v-else
+          scroll-y
+          class="goods-scroll"
+          :scroll-into-view="scrollAnchor"
+          :lower-threshold="10"
+          @scroll="onGoodsScroll"
+          @scrolltolower="onScrollLower"
+          @touchstart="onGoodsTouchStart"
+          @touchmove="onGoodsTouchMove"
+          @touchend="onGoodsTouchEnd"
+          @touchcancel="onGoodsTouchEnd"
+        >
+          <view class="goods-inner">
+            <view id="goods-top"></view>
+            <view v-for="fruit in visibleFruits" :key="fruit.id" class="goods-row" @tap="goDetail(fruit)">
+              <view class="goods-img">
+                <image v-if="primaryImage(fruit)" class="goods-image" :src="primaryImage(fruit)" mode="aspectFill" />
+                <text v-else>{{ fruitIcon(fruit.name) }}</text>
+                <view v-if="fruit.stock_status === 'out_of_stock'" class="sold-out-mask">
+                  <text class="sold-out-text">售罄</text>
+                </view>
               </view>
-            </view>
-            <view class="goods-info">
-              <view class="goods-name">{{ fruit.name }} {{ fruit.spec }}</view>
-              <view v-if="productDesc(fruit)" class="goods-desc">{{ productDesc(fruit) }}</view>
-              <view class="goods-status">{{ statusLabel(fruit.stock_status) }} · 起订 {{ fruit.quote?.min_order_quantity }}{{ fruit.unit }}</view>
-              <view class="price-line">
-                <text class="goods-price">¥{{ money(fruit.quote?.normal_price) }}</text>
-                <text class="verified-price">认证价 {{ displayVerifiedPrice(fruit.quote?.verified_price) }}</text>
+              <view class="goods-info">
+                <view class="goods-name">{{ fruit.name }} {{ fruit.spec }}</view>
+                <view v-if="productDesc(fruit)" class="goods-desc">{{ productDesc(fruit) }}</view>
+                <view class="goods-status">{{ statusLabel(fruit.stock_status) }} · 起订 {{ fruit.quote?.min_order_quantity }}{{ fruit.unit }}</view>
+                <view class="price-line">
+                  <text class="goods-price">¥{{ money(fruit.quote?.normal_price) }}</text>
+                  <text class="verified-price">认证价 {{ displayVerifiedPrice(fruit.quote?.verified_price) }}</text>
+                </view>
               </view>
+              <view class="add" @tap.stop="addToCart(fruit)"><view class="add-line horizontal"></view><view class="add-line vertical"></view></view>
             </view>
-            <view class="add" @tap.stop="addToCart(fruit)"><view class="add-line horizontal"></view><view class="add-line vertical"></view></view>
+            <view v-if="nextCategory && !keyword.trim()" class="load-next" :class="{ ready: nextCategoryReady }">
+              <text class="load-next-text">{{ nextCategoryReady ? `松开进入「${nextCategory.name}」` : `上滑进入「${nextCategory.name}」` }}</text>
+            </view>
           </view>
         </scroll-view>
       </view>
@@ -268,6 +382,22 @@ defineExpose({
 .goods-scroll {
   flex: 1;
   min-height: 0;
+}
+
+.load-next {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28rpx 0 44rpx;
+  color: #bbb;
+  font-size: 24rpx;
+  letter-spacing: 1rpx;
+  transition: color 0.15s ease;
+}
+
+.load-next.ready {
+  color: #ff9a00;
+  font-weight: 700;
 }
 
 .goods-row {
