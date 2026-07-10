@@ -407,7 +407,7 @@ def get_order(
         raise HTTPException(status_code=401, detail='Missing customer login')
     order = (
         db.query(Order)
-        .options(joinedload(Order.items))
+        .options(joinedload(Order.items).joinedload(OrderItem.fruit))
         .filter(Order.id == order_id, Order.customer_id == auth_customer.id)
         .first()
     )
@@ -427,7 +427,7 @@ def update_order(
         raise HTTPException(status_code=401, detail='Missing customer login')
     order = (
         db.query(Order)
-        .options(joinedload(Order.items))
+        .options(joinedload(Order.items).joinedload(OrderItem.fruit))
         .filter(Order.id == order_id, Order.customer_id == auth_customer.id)
         .first()
     )
@@ -458,7 +458,7 @@ def my_orders(
         return []
     return (
         db.query(Order)
-        .options(joinedload(Order.items))
+        .options(joinedload(Order.items).joinedload(OrderItem.fruit))
         .filter(Order.customer_id == customer_id)
         .order_by(Order.id.desc())
         .all()

@@ -59,6 +59,11 @@ function displayVerifiedPrice(price) {
   return isVerified.value ? `¥${money(price)}` : '???'
 }
 
+// 商品封面：优先多图第一张，回退单图字段，取不到再由模板兜底 emoji
+function primaryImage(fruit) {
+  return fruit.image_urls?.[0] || fruit.image_url || ''
+}
+
 function normalizeFruit(fruit, quantity) {
   const quote = fruit.quote || {}
   const price = isVerified.value ? quote.verified_price : quote.normal_price
@@ -67,6 +72,7 @@ function normalizeFruit(fruit, quantity) {
     name: fruit.name,
     spec: fruit.spec,
     unit: fruit.unit,
+    image: primaryImage(fruit),
     quantity: Number(quantity || quote.min_order_quantity || 1),
     normal_price: Number(quote.normal_price || 0),
     verified_price: Number(quote.verified_price || quote.normal_price || 0),
@@ -81,6 +87,7 @@ function normalizeOrderItem(item) {
     name: item.fruit_name,
     spec: item.spec,
     unit: item.unit,
+    image: item.image_url || '',
     quantity: Number(item.quantity || 1),
     normal_price: price,
     verified_price: price,
@@ -97,6 +104,7 @@ function normalizeCartItem(item) {
     name: item.name,
     spec: item.spec,
     unit: item.unit,
+    image: item.image_url || item.image_urls?.[0] || '',
     quantity: Number(item.quantity || item.min_order_quantity || item.quote?.min_order_quantity || 1),
     normal_price: Number(normal || 0),
     verified_price: Number(verified || 0),
@@ -403,7 +411,10 @@ onPullDownRefresh(async () => {
         <button class="goods-add" :disabled="isEditMode && !editAllowed" @tap="openGoodsPicker">添加商品</button>
       </view>
       <view v-for="item in orderItems" :key="item.id" class="goods-row">
-        <view class="goods-img">{{ fruitIcon(item.name) }}</view>
+        <view class="goods-img">
+          <image v-if="item.image" class="goods-image" :src="item.image" mode="aspectFill" />
+          <text v-else>{{ fruitIcon(item.name) }}</text>
+        </view>
         <view class="goods-info">
           <view class="goods-name">{{ item.name }}</view>
           <view class="goods-spec">{{ item.spec }}</view>
@@ -465,7 +476,10 @@ onPullDownRefresh(async () => {
             :class="{ disabled: fruit.stock_status === 'out_of_stock' }"
             @tap="addFruitToOrder(fruit)"
           >
-            <view class="picker-img">{{ fruitIcon(fruit.name) }}</view>
+            <view class="picker-img">
+              <image v-if="primaryImage(fruit)" class="goods-image" :src="primaryImage(fruit)" mode="aspectFill" />
+              <text v-else>{{ fruitIcon(fruit.name) }}</text>
+            </view>
             <view class="picker-info">
               <view class="picker-name">
                 <text>{{ fruit.name }}</text>
@@ -611,9 +625,16 @@ onPullDownRefresh(async () => {
   justify-content: center;
   width: 136rpx;
   height: 112rpx;
+  overflow: hidden;
   border-radius: 18rpx;
   font-size: 72rpx;
   background: #fafafa;
+}
+
+.goods-img .goods-image,
+.picker-img .goods-image {
+  width: 100%;
+  height: 100%;
 }
 
 .goods-info { flex: 1; min-width: 0; }
@@ -779,6 +800,7 @@ onPullDownRefresh(async () => {
   justify-content: center;
   width: 104rpx;
   height: 92rpx;
+  overflow: hidden;
   border-radius: 18rpx;
   background: #fafafa;
   font-size: 56rpx;

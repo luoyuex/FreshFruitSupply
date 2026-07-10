@@ -175,6 +175,7 @@ class OrderItemOut(BaseModel):
     id: int
     fruit_id: int
     fruit_name: str
+    image_url: str | None = None
     spec: str
     unit: str
     price: Decimal
@@ -182,6 +183,10 @@ class OrderItemOut(BaseModel):
     subtotal: Decimal
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer('image_url')
+    def serialize_image_url(self, value: str | None):
+        return to_public_url(value)
 
 
 class OrderOut(BaseModel):

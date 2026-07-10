@@ -11,16 +11,6 @@ const { loading, error, keyword, activeCategory, categoryItems, categories, visi
 const customer = shallowRef(null)
 const cartTotal = shallowRef(0)
 
-// 拖动相关状态
-const cartX = shallowRef(0)
-const cartY = shallowRef(0)
-const isDragging = shallowRef(false)
-const startX = shallowRef(0)
-const startY = shallowRef(0)
-const moveStartX = shallowRef(0)
-const moveStartY = shallowRef(0)
-const hasMoved = shallowRef(false)
-
 const sideCategories = computed(() => [{ name: '全部', id: 'all' }, ...categoryItems.value])
 const isVerified = computed(() => customer.value?.verification_status === 'verified')
 
@@ -63,61 +53,7 @@ function addToCart(fruit) {
   uni.showToast({ title: '已加入预订车', icon: 'success' })
 }
 
-function goCart() {
-  uni.switchTab({ url: '/pages/cart/index' })
-}
-
-function initCartPosition() {
-  const sysInfo = uni.getSystemInfoSync()
-  const cartSize = 90 / 750 * sysInfo.windowWidth
-  cartX.value = sysInfo.windowWidth - cartSize - 26
-  cartY.value = sysInfo.windowHeight - 128 - cartSize
-}
-
-function onCartTouchStart(e) {
-  const touch = e.touches[0]
-  startX.value = touch.clientX
-  startY.value = touch.clientY
-  moveStartX.value = cartX.value
-  moveStartY.value = cartY.value
-  isDragging.value = true
-  hasMoved.value = false
-}
-
-function onCartTouchMove(e) {
-  if (!isDragging.value) return
-  const touch = e.touches[0]
-  const dx = touch.clientX - startX.value
-  const dy = touch.clientY - startY.value
-
-  if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
-    hasMoved.value = true
-  }
-
-  const sysInfo = uni.getSystemInfoSync()
-  const cartSize = 90 / 750 * sysInfo.windowWidth
-  let newX = moveStartX.value + dx
-  let newY = moveStartY.value + dy
-
-  // 边界限制
-  newX = Math.max(0, Math.min(newX, sysInfo.windowWidth - cartSize))
-  newY = Math.max(0, Math.min(newY, sysInfo.windowHeight - cartSize))
-
-  cartX.value = newX
-  cartY.value = newY
-}
-
-function onCartTouchEnd() {
-  isDragging.value = false
-}
-
-function onCartTap() {
-  if (hasMoved.value) return
-  goCart()
-}
-
 onMounted(() => {
-  initCartPosition()
   loadFruits()
   loadCustomer()
 })
@@ -231,18 +167,7 @@ defineExpose({
       </view>
     </view>
 
-    <view
-      v-if="cartTotal"
-      class="float-cart"
-      :style="{ left: cartX + 'px', top: cartY + 'px' }"
-      @touchstart.stop.prevent="onCartTouchStart"
-      @touchmove.stop.prevent="onCartTouchMove"
-      @touchend.stop.prevent="onCartTouchEnd"
-      @tap.stop="onCartTap"
-    >
-      <text>🛒</text>
-      <text class="cart-badge">{{ cartTotal }}</text>
-    </view>
+    <float-cart :count="cartTotal" />
   </view>
 </template>
 
@@ -458,34 +383,6 @@ defineExpose({
   font-size: 28rpx;
   font-weight: 900;
   letter-spacing: 4rpx;
-}
-
-.float-cart {
-  position: fixed;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 90rpx;
-  height: 90rpx;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 8rpx 24rpx rgba(0,0,0,.14);
-  font-size: 40rpx;
-  z-index: 999;
-}
-
-.cart-badge {
-  position: absolute;
-  top: 0;
-  right: 0;
-  min-width: 30rpx;
-  height: 30rpx;
-  line-height: 30rpx;
-  border-radius: 999rpx;
-  text-align: center;
-  color: #fff;
-  background: #f20d2f;
-  font-size: 20rpx;
 }
 
 /* 骨架屏样式 */

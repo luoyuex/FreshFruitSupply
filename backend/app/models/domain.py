@@ -190,6 +190,11 @@ class OrderItem(Base):
     order: Mapped[Order] = relationship(back_populates='items')
     fruit: Mapped[Fruit] = relationship(back_populates='order_items')
 
+    @property
+    def image_url(self) -> str | None:
+        # 订单项本身不存图，封面取自关联水果，便于订单页展示真实缩略图
+        return self.fruit.image_url if self.fruit else None
+
 
 class Admin(TimestampMixin, Base):
     __tablename__ = 'admins'

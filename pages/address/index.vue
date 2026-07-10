@@ -118,6 +118,27 @@ function parseRegion(address = '') {
 }
 
 function pickLocation() {
+  // 先触发隐私授权（微信官方弹窗），同意后再选点；旧基础库无此 API 时直接选点
+  // eslint-disable-next-line no-undef
+  if (typeof wx !== 'undefined' && wx.requirePrivacyAuthorize) {
+    // eslint-disable-next-line no-undef
+    wx.requirePrivacyAuthorize({
+      success: () => openChooseLocation(),
+      fail: (err) => {
+        console.error('[requirePrivacyAuthorize fail]', err)
+        uni.showModal({
+          title: '隐私授权失败',
+          content: (err && err.errMsg) || '未知错误',
+          showCancel: false,
+        })
+      },
+    })
+  } else {
+    openChooseLocation()
+  }
+}
+
+function openChooseLocation() {
   uni.chooseLocation({
     success: (res) => {
       const { province, city, district, detail } = parseRegion(res.address)
@@ -130,6 +151,7 @@ function pickLocation() {
     },
     fail: (err) => {
       const msg = err.errMsg || ''
+      console.error('[chooseLocation fail]', err)
       if (msg.includes('cancel')) return
       if (msg.includes('auth') || msg.includes('deny')) {
         uni.showModal({
@@ -142,7 +164,12 @@ function pickLocation() {
         })
         return
       }
-      uni.showToast({ title: '地图选点失败，请手动填写', icon: 'none' })
+      // 临时诊断：显示真实错误
+      uni.showModal({
+        title: 'chooseLocation 失败',
+        content: msg || '未知错误',
+        showCancel: false,
+      })
     },
   })
 }
@@ -305,7 +332,8 @@ onPullDownRefresh(async () => {
         </view>
         <input v-model="form.receiverName" class="input" placeholder="收货人" />
         <input v-model="form.receiverPhone" class="input" type="number" placeholder="手机号" />
-        <view class="map-pick" @tap="pickLocation">
+        <!-- 地图选点暂时隐藏，改为手动填写；功能保留，后续启用时删掉 v-if="false" 即可 -->
+        <view v-if="false" class="map-pick" @tap="pickLocation">
           <text class="map-pick-icon">📍</text>
           <text class="map-pick-text">从地图选择</text>
           <text v-if="form.latitude" class="map-pick-done">已定位 ✓</text>
