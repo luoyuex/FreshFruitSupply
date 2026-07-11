@@ -1,8 +1,9 @@
 <script setup>
-import { computed, reactive, ref, shallowRef } from 'vue'
+import { computed, reactive, ref, shallowRef, watch } from 'vue'
 import { onLoad, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { clearSelectedCartItems } from '../../utils/cart.js'
-import { fruitIcon, money } from '../../utils/format.js'
+import { dateText, fruitIcon, money } from '../../utils/format.js'
+import { couponDiscount, isCouponUsable, pickBestCoupon } from '../../utils/coupon.js'
 import { request } from '../../utils/request.js'
 import { hasCustomerLogin, isPlaceholderPhone, loginWithWeChat } from '../../utils/auth.js'
 
@@ -30,9 +31,17 @@ const form = reactive({
   deliveryNote: '',
 })
 
+const availableCoupons = ref([])
+const selectedCoupon = shallowRef(null)
+const couponPickerVisible = shallowRef(false)
+const couponManuallySet = shallowRef(false)
+
 const isVerified = computed(() => customer.value?.verification_status === 'verified')
 const isEditMode = computed(() => Boolean(editingOrderId.value))
 const estimatedTotal = computed(() => orderItems.value.reduce((sum, item) => sum + activePrice(item) * Number(item.quantity || 0), 0))
+const couponDiscountValue = computed(() => couponDiscount(selectedCoupon.value, estimatedTotal.value))
+const payableTotal = computed(() => Math.max(0, estimatedTotal.value - couponDiscountValue.value))
+const usableCouponCount = computed(() => availableCoupons.value.filter((item) => isCouponUsable(item, estimatedTotal.value)).length)
 const filteredFruitOptions = computed(() => {
   const keyword = productKeyword.value.trim().toLowerCase()
   if (!keyword) return fruitOptions.value
@@ -174,6 +183,76 @@ async function loadCustomer() {
     customer.value = null
   }
 }
+
+async function loadCoupons() {
+  if (!hasCustomerLogin()) {
+    availableCoupons.value = []
+    selectedCoupon.value = null
+    return
+  }
+  try {
+    const coupons = await request({ url: '/coupons/my' })
+    const list = Array.isArray(coupons) ? coupons : []
+    const currentOrderId = Number(editingOrderId.value) || null
+    // 可选：未使用的券，外加本订单当前已占用的券（编辑时保留展示与勾选）
+    availableCoupons.value = list.filter((item) => item.status === 'unused' || (currentOrderId && item.order_id === currentOrderId))
+    // 编辑模式：默认预选本订单原先使用的券
+    if (currentOrderId && !couponManuallySet.value) {
+      const current = list.find((item) => item.order_id === currentOrderId)
+      if (current) {
+        selectedCoupon.value = current
+        return
+      }
+    }
+  } catch (err) {
+    availableCoupons.value = []
+  }
+  if (selectedCoupon.value) {
+    selectedCoupon.value = availableCoupons.value.find((item) => item.id === selectedCoupon.value.id) || null
+  }
+  autoSelectCoupon()
+}
+
+function autoSelectCoupon() {
+  if (couponManuallySet.value) {
+    // 用户手动设定过：仅在所选券因金额变化而失效时清空
+    if (selectedCoupon.value && !isCouponUsable(selectedCoupon.value, estimatedTotal.value)) {
+      selectedCoupon.value = null
+    }
+    return
+  }
+  selectedCoupon.value = pickBestCoupon(availableCoupons.value, estimatedTotal.value)
+}
+
+function isUsable(coupon) {
+  return isCouponUsable(coupon, estimatedTotal.value)
+}
+
+function openCouponPicker() {
+  couponPickerVisible.value = true
+}
+
+function closeCouponPicker() {
+  couponPickerVisible.value = false
+}
+
+function chooseCoupon(coupon) {
+  if (coupon && !isCouponUsable(coupon, estimatedTotal.value)) {
+    uni.showToast({ title: `满${money(coupon.min_spend)}元可用`, icon: 'none' })
+    return
+  }
+  selectedCoupon.value = coupon
+  couponManuallySet.value = true
+  couponPickerVisible.value = false
+}
+
+function clearCoupon() {
+  selectedCoupon.value = null
+  couponManuallySet.value = true
+  couponPickerVisible.value = false
+}
+
+watch(estimatedTotal, () => autoSelectCoupon())
 
 async function ensureCustomerLogin() {
   if (hasCustomerLogin()) return true
@@ -344,6 +423,7 @@ async function submitOrder() {
         detail_address: form.detailAddress,
         delivery_note: form.deliveryNote,
         items: orderItems.value.map((item) => ({ fruit_id: item.id, quantity: Number(item.quantity) })),
+        coupon_id: selectedCoupon.value?.id || null,
       },
     })
     if (checkoutFromCart.value) {
@@ -358,6 +438,11 @@ async function submitOrder() {
     })
   } catch (err) {
     uni.showToast({ title: err.message, icon: 'none' })
+    // 券相关错误（已被使用/过期/未达门槛）时重新拉取券列表并重选
+    if (err.message && err.message.includes('券')) {
+      couponManuallySet.value = false
+      loadCoupons()
+    }
   } finally {
     submitting.value = false
   }
@@ -369,6 +454,7 @@ async function reloadOrder(query = pageQuery.value) {
   editAllowed.value = true
   if (editingOrderId.value) {
     await loadOrderForEdit(editingOrderId.value)
+    loadCoupons()
     return
   }
   defaultAddressLoaded.value = false
@@ -376,10 +462,12 @@ async function reloadOrder(query = pageQuery.value) {
   if (checkoutFromCart.value) {
     loadCartItems()
     await loadDefaultAddress()
+    loadCoupons()
     return
   }
   await loadSingleFruit(query.id)
   await loadDefaultAddress()
+  loadCoupons()
 }
 
 onLoad(async (query) => {
@@ -430,6 +518,16 @@ onPullDownRefresh(async () => {
         </view>
       </view>
       <view class="total">预估合计 <text>¥{{ money(estimatedTotal) }}</text></view>
+    </view>
+
+    <view class="coupon-row" @tap="openCouponPicker">
+      <text class="coupon-row-label">优惠券</text>
+      <view class="coupon-row-value">
+        <text v-if="selectedCoupon" class="coupon-row-picked">-¥{{ money(couponDiscountValue) }}</text>
+        <text v-else-if="usableCouponCount" class="coupon-row-hint">{{ usableCouponCount }} 张可用</text>
+        <text v-else class="coupon-row-none">暂无可用券</text>
+        <text class="coupon-row-arrow">›</text>
+      </view>
     </view>
 
     <view class="card">
@@ -497,8 +595,49 @@ onPullDownRefresh(async () => {
       </view>
     </view>
 
+    <view v-if="couponPickerVisible" class="modal-mask" @tap="closeCouponPicker">
+      <view class="coupon-modal" @tap.stop>
+        <view class="modal-head">
+          <view>
+            <view class="modal-title">选择优惠券</view>
+            <view class="modal-sub">满减券可与认证价叠加，每单限用一张</view>
+          </view>
+          <text class="modal-close" @tap="closeCouponPicker">×</text>
+        </view>
+        <scroll-view class="coupon-list" scroll-y>
+          <view v-if="!availableCoupons.length" class="picker-empty">暂无可用优惠券</view>
+          <view
+            v-for="coupon in availableCoupons"
+            :key="coupon.id"
+            class="coupon-card-item"
+            :class="{ disabled: !isUsable(coupon), active: selectedCoupon && selectedCoupon.id === coupon.id }"
+            @tap="chooseCoupon(coupon)"
+          >
+            <view class="coupon-face">
+              <text class="coupon-face-unit">¥</text>
+              <text class="coupon-face-amount">{{ money(coupon.amount) }}</text>
+            </view>
+            <view class="coupon-meta">
+              <view class="coupon-meta-name">{{ coupon.name }}</view>
+              <view class="coupon-meta-cond">{{ Number(coupon.min_spend) > 0 ? `满${money(coupon.min_spend)}可用` : '无门槛立减' }}</view>
+              <view class="coupon-meta-expire">有效期至 {{ dateText(coupon.expires_at) }}</view>
+            </view>
+            <view class="coupon-pick">
+              <text v-if="!isUsable(coupon)" class="coupon-nomatch">未满足</text>
+              <text v-else-if="selectedCoupon && selectedCoupon.id === coupon.id" class="coupon-radio on">✓</text>
+              <text v-else class="coupon-radio">○</text>
+            </view>
+          </view>
+        </scroll-view>
+        <button class="coupon-clear" @tap="clearCoupon">不使用优惠券</button>
+      </view>
+    </view>
+
     <view class="bottom-bar">
-      <view class="bottom-total">合计 <text>¥{{ money(estimatedTotal) }}</text></view>
+      <view class="bottom-total">
+        <view>合计 <text>¥{{ money(payableTotal) }}</text></view>
+        <view v-if="couponDiscountValue > 0" class="bottom-saved">已优惠 ¥{{ money(couponDiscountValue) }}</view>
+      </view>
       <button class="submit" :loading="submitting" :disabled="submitting || loading || (isEditMode && !editAllowed)" @tap="submitOrder">{{ isEditMode ? (editAllowed ? '保存修改' : '已截止修改') : '提交预订' }}</button>
     </view>
   </view>
@@ -879,4 +1018,105 @@ onPullDownRefresh(async () => {
 
 .bottom-total { color: #333; font-size: 28rpx; }
 .submit { width: 220rpx; height: 72rpx; line-height: 72rpx; border-radius: 999rpx; color: #fff; background: #ffb700; font-size: 30rpx; font-weight: 800; }
+
+.bottom-saved {
+  margin-top: 2rpx;
+  color: #ff6a00;
+  font-size: 22rpx;
+}
+
+.coupon-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 26rpx;
+  padding: 30rpx 28rpx;
+  border-radius: 22rpx;
+  background: #fff;
+}
+
+.coupon-row-label { color: #222; font-size: 30rpx; font-weight: 800; }
+
+.coupon-row-value { display: flex; align-items: center; gap: 10rpx; }
+.coupon-row-picked { color: #f20d2f; font-size: 30rpx; font-weight: 900; }
+.coupon-row-hint { color: #ff8a00; font-size: 27rpx; font-weight: 700; }
+.coupon-row-none { color: #999; font-size: 27rpx; }
+.coupon-row-arrow { color: #bbb; font-size: 34rpx; }
+
+.coupon-modal {
+  width: 100%;
+  max-height: 78vh;
+  padding: 30rpx 28rpx calc(30rpx + env(safe-area-inset-bottom));
+  border-radius: 34rpx 34rpx 0 0;
+  background: #f6f6f6;
+  box-sizing: border-box;
+}
+
+.coupon-modal .modal-head { padding: 0 4rpx 10rpx; }
+
+.coupon-list { height: 700rpx; max-height: 52vh; margin-top: 12rpx; }
+
+.coupon-card-item {
+  display: flex;
+  align-items: center;
+  gap: 22rpx;
+  margin-bottom: 18rpx;
+  padding: 26rpx 24rpx;
+  border-radius: 20rpx;
+  border: 2rpx solid transparent;
+  background: #fff;
+}
+
+.coupon-card-item.active { border-color: #ffb700; }
+.coupon-card-item.disabled { opacity: .5; }
+
+.coupon-face {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  min-width: 150rpx;
+  padding: 22rpx 12rpx;
+  border-radius: 16rpx;
+  color: #fff;
+  background: linear-gradient(135deg, #ff7a45, #f20d2f);
+}
+
+.coupon-face-unit { font-size: 26rpx; font-weight: 800; }
+.coupon-face-amount { font-size: 52rpx; font-weight: 900; }
+
+.coupon-meta { flex: 1; min-width: 0; }
+.coupon-meta-name { color: #222; font-size: 29rpx; font-weight: 900; }
+.coupon-meta-cond { margin-top: 8rpx; color: #ff6a00; font-size: 24rpx; }
+.coupon-meta-expire { margin-top: 8rpx; color: #999; font-size: 23rpx; }
+
+.coupon-pick { display: flex; align-items: center; justify-content: center; min-width: 60rpx; }
+.coupon-radio { color: #ccc; font-size: 32rpx; }
+
+.coupon-radio.on {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40rpx;
+  height: 40rpx;
+  border-radius: 50%;
+  color: #fff;
+  background: #ffb700;
+  font-size: 26rpx;
+}
+
+.coupon-nomatch { color: #bbb; font-size: 23rpx; }
+
+.coupon-clear {
+  width: 100%;
+  height: 84rpx;
+  line-height: 84rpx;
+  margin-top: 10rpx;
+  border-radius: 16rpx;
+  color: #555;
+  background: #fff;
+  font-size: 28rpx;
+  font-weight: 700;
+}
+
+.coupon-clear::after { border: none; }
 </style>

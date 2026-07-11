@@ -164,6 +164,9 @@ class Order(TimestampMixin, Base):
     detail_address: Mapped[str] = mapped_column(String(255))
     delivery_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     email_notify_status: Mapped[str] = mapped_column(String(32), default='pending')
+    coupon_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    discount_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
+    payable_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
 
     customer: Mapped[Customer] = relationship(back_populates='orders')
     items: Mapped[list['OrderItem']] = relationship(back_populates='order', cascade='all, delete-orphan')
@@ -214,3 +217,37 @@ class SystemSetting(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     key: Mapped[str] = mapped_column(String(80), unique=True, index=True)
     value: Mapped[str] = mapped_column(Text)
+
+
+class CouponTemplate(TimestampMixin, Base):
+    __tablename__ = 'coupon_templates'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    discount_type: Mapped[str] = mapped_column(String(16), default='amount')  # 预留扩展，本期只用 amount
+    amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0)
+    min_spend: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)  # 满减门槛，0=无门槛
+    valid_days: Mapped[int] = mapped_column(Integer, default=30)  # 领取后 N 天到期
+    grant_on_verified: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    per_customer_limit: Mapped[int] = mapped_column(Integer, default=1)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+
+
+class CustomerCoupon(TimestampMixin, Base):
+    __tablename__ = 'customer_coupons'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey('customers.id'), index=True)
+    template_id: Mapped[int] = mapped_column(ForeignKey('coupon_templates.id'), index=True)
+    # 发放时从模板快照，模板后续改动不影响已发出的券
+    name: Mapped[str] = mapped_column(String(80))
+    amount: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    min_spend: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
+    status: Mapped[str] = mapped_column(String(16), default='unused', index=True)  # unused/used/expired
+    source: Mapped[str] = mapped_column(String(16), default='verified')  # verified/admin
+    issued_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 与 orders 的关联为普通整型列（非外键），避免 orders/customer_coupons 之间的循环外键
+    order_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)

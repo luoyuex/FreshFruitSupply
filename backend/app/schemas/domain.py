@@ -169,6 +169,7 @@ class OrderCreate(BaseModel):
     detail_address: str
     delivery_note: str | None = None
     items: List[OrderItemCreate]
+    coupon_id: int | None = None
 
 
 class OrderItemOut(BaseModel):
@@ -195,6 +196,9 @@ class OrderOut(BaseModel):
     customer_id: int
     status: str
     estimated_total: Decimal
+    discount_amount: Decimal = Decimal('0')
+    payable_total: Decimal = Decimal('0')
+    coupon_id: int | None = None
     receiver_name: str
     receiver_phone: str
     province: str
@@ -216,6 +220,47 @@ class OrderStatusUpdate(BaseModel):
 
 class OrderBulkStatusUpdate(OrderStatusUpdate):
     order_ids: List[int] = Field(min_length=1)
+
+
+class CouponTemplateOut(BaseModel):
+    id: int
+    name: str
+    description: str | None = None
+    discount_type: str
+    amount: Decimal
+    min_spend: Decimal
+    valid_days: int
+    grant_on_verified: bool
+    per_customer_limit: int
+    is_active: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CouponTemplateUpsert(BaseModel):
+    name: str
+    description: str | None = None
+    amount: Decimal = Field(ge=0)
+    min_spend: Decimal = Field(default=0, ge=0)
+    valid_days: int = Field(default=30, gt=0)
+    grant_on_verified: bool = False
+    per_customer_limit: int = Field(default=1, ge=1)
+    is_active: bool = True
+
+
+class CustomerCouponOut(BaseModel):
+    id: int
+    name: str
+    amount: Decimal
+    min_spend: Decimal
+    status: str
+    source: str
+    issued_at: datetime | None = None
+    expires_at: datetime
+    used_at: datetime | None = None
+    order_id: int | None = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SalesStatsItemOut(BaseModel):

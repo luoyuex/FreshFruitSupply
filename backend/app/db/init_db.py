@@ -2,7 +2,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import hash_password
 from app.db.session import Base, SessionLocal, engine
-from app.models import Admin, SystemSetting
+from app.models import Admin, CouponTemplate, SystemSetting
 
 
 def seed(db: Session) -> None:
@@ -17,6 +17,20 @@ def seed(db: Session) -> None:
     for key, value in settings.items():
         if not db.query(SystemSetting).filter(SystemSetting.key == key).first():
             db.add(SystemSetting(key=key, value=value))
+
+    # 默认「认证送券」模板：认证通过自动发放满100减10、有效期30天，后台可再改/停用
+    if not db.query(CouponTemplate).filter(CouponTemplate.grant_on_verified.is_(True)).first():
+        db.add(CouponTemplate(
+            name='认证专享券',
+            description='完成商家认证后自动发放',
+            discount_type='amount',
+            amount=10,
+            min_spend=100,
+            valid_days=30,
+            grant_on_verified=True,
+            per_customer_limit=1,
+            is_active=True,
+        ))
 
     db.commit()
 

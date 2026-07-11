@@ -21,6 +21,9 @@ def _build_order_body(order: Order) -> str:
     for item in order.items:
         lines.append(f'- {item.fruit_name} {item.spec} x {item.quantity}{item.unit}，单价 {item.price}，小计 {item.subtotal}')
     lines.extend(['', f'预估总价：{order.estimated_total}'])
+    if order.discount_amount and order.discount_amount > 0:
+        lines.append(f'优惠券抵扣：-{order.discount_amount}')
+        lines.append(f'实付：{order.payable_total}')
     return '\n'.join(lines)
 
 

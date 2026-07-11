@@ -11,8 +11,9 @@ from sqlalchemy.orm import Session, joinedload
 from app.api.deps import admin_permissions, get_current_admin, get_optional_auth_customer, require_admin_permission
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db.session import get_db
-from app.models import Admin, Customer, CustomerVerification, Fruit, FruitCategory, Order, PriceQuote
-from app.schemas import AdminAuthOut, AdminEntryVisibleOut, AdminLogin, AdminOut, AdminPasswordUpdate, AdminUpsert, CustomerAdminOut, FruitCategoryOut, FruitCategoryUpsert, FruitOut, FruitUpsert, OrderBulkStatusUpdate, OrderOut, OrderStatusUpdate, SalesStatsOut, VerificationReview
+from app.models import Admin, CouponTemplate, Customer, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, PriceQuote
+from app.schemas import AdminAuthOut, AdminEntryVisibleOut, AdminLogin, AdminOut, AdminPasswordUpdate, AdminUpsert, CouponTemplateOut, CouponTemplateUpsert, CustomerAdminOut, FruitCategoryOut, FruitCategoryUpsert, FruitOut, FruitUpsert, OrderBulkStatusUpdate, OrderOut, OrderStatusUpdate, SalesStatsOut, VerificationReview
+from app.services.coupon import grant_coupons_on_verified
 from app.services.upload import save_upload, to_public_url, to_public_urls, to_storage_path, to_storage_paths
 
 router = APIRouter(prefix='/admin')
@@ -20,6 +21,17 @@ router = APIRouter(prefix='/admin')
 
 def _admin_payload(admin: Admin) -> AdminOut:
     return AdminOut.model_validate(admin)
+
+
+def _release_order_coupon(db: Session, order: Order) -> None:
+    """订单取消时，释放其占用且未过期的优惠券，回到未使用状态。"""
+    if not order.coupon_id:
+        return
+    coupon = db.query(CustomerCoupon).filter(CustomerCoupon.id == order.coupon_id).first()
+    if coupon and coupon.status == 'used' and coupon.expires_at >= datetime.now():
+        coupon.status = 'unused'
+        coupon.used_at = None
+        coupon.order_id = None
 
 
 def _assert_not_last_super_admin(db: Session, admin: Admin, next_role: str | None = None, next_active: bool | None = None) -> None:
@@ -258,6 +270,8 @@ def bulk_update_order_status(
     if missing_ids:
         raise HTTPException(status_code=404, detail=f'Orders not found: {missing_ids}')
     for order in orders:
+        if payload.status == 'cancelled' and order.status != 'cancelled':
+            _release_order_coupon(db, order)
         order.status = payload.status
     db.commit()
     for order in orders:
@@ -275,6 +289,8 @@ def update_order_status(
     order = db.query(Order).options(joinedload(Order.items)).filter(Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail='Order not found')
+    if payload.status == 'cancelled' and order.status != 'cancelled':
+        _release_order_coupon(db, order)
     order.status = payload.status
     db.commit()
     db.refresh(order)
@@ -365,11 +381,72 @@ def review_verification(
             customer.shop_name = verification.shop_name
             customer.contact_name = verification.contact_name
             customer.business_type = verification.business_type
+            grant_coupons_on_verified(db, customer)
         elif customer.verification_status != 'verified':
             customer.verification_status = 'rejected'
     db.commit()
     db.refresh(verification)
     return _verification_payload(verification)
+
+
+@router.get('/coupon-templates', response_model=list[CouponTemplateOut])
+def list_coupon_templates(
+    db: Session = Depends(get_db),
+    _: Admin = Depends(require_admin_permission('coupons')),
+):
+    return db.query(CouponTemplate).order_by(CouponTemplate.id.desc()).all()
+
+
+@router.post('/coupon-templates', response_model=CouponTemplateOut)
+def create_coupon_template(
+    payload: CouponTemplateUpsert,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(require_admin_permission('coupons')),
+):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail='券名称不能为空')
+    template = CouponTemplate(
+        name=name,
+        description=payload.description,
+        discount_type='amount',
+        amount=payload.amount,
+        min_spend=payload.min_spend,
+        valid_days=payload.valid_days,
+        grant_on_verified=payload.grant_on_verified,
+        per_customer_limit=payload.per_customer_limit,
+        is_active=payload.is_active,
+    )
+    db.add(template)
+    db.commit()
+    db.refresh(template)
+    return template
+
+
+@router.patch('/coupon-templates/{template_id}', response_model=CouponTemplateOut)
+def update_coupon_template(
+    template_id: int,
+    payload: CouponTemplateUpsert,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(require_admin_permission('coupons')),
+):
+    template = db.query(CouponTemplate).filter(CouponTemplate.id == template_id).first()
+    if not template:
+        raise HTTPException(status_code=404, detail='Coupon template not found')
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail='券名称不能为空')
+    template.name = name
+    template.description = payload.description
+    template.amount = payload.amount
+    template.min_spend = payload.min_spend
+    template.valid_days = payload.valid_days
+    template.grant_on_verified = payload.grant_on_verified
+    template.per_customer_limit = payload.per_customer_limit
+    template.is_active = payload.is_active
+    db.commit()
+    db.refresh(template)
+    return template
 
 
 @router.post('/fruits', response_model=FruitOut)

@@ -8,8 +8,9 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import get_optional_auth_customer
 from app.db.session import get_db
-from app.models import Customer, CustomerAddress, CustomerVerification, Fruit, FruitCategory, Order, OrderItem
-from app.schemas import CustomerAddressOut, CustomerAddressUpsert, CustomerOut, CustomerProfileUpdate, FruitCategoryOut, FruitOut, OrderCreate, OrderOut, VerificationOut
+from app.models import Customer, CustomerAddress, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, OrderItem
+from app.schemas import CustomerAddressOut, CustomerAddressUpsert, CustomerCouponOut, CustomerOut, CustomerProfileUpdate, FruitCategoryOut, FruitOut, OrderCreate, OrderOut, VerificationOut
+from app.services.coupon import compute_discount, grant_coupons_on_verified
 from app.services.customer import get_or_create_customer
 from app.services.email import send_order_email
 from app.services.upload import save_upload, to_public_urls
@@ -64,6 +65,55 @@ def _apply_order_payload(order: Order, customer: Customer, payload: OrderCreate,
             subtotal=subtotal,
         ))
     order.estimated_total = estimated_total
+    _apply_coupon(order, customer, payload.coupon_id, db)
+
+
+def _apply_coupon(order: Order, customer: Customer, coupon_id: int | None, db: Session) -> None:
+    now = datetime.now()
+
+    # 编辑场景：释放订单原先占用、且与本次不同的券
+    if order.coupon_id and order.coupon_id != coupon_id:
+        previous = db.query(CustomerCoupon).filter(CustomerCoupon.id == order.coupon_id).first()
+        if previous and previous.status == 'used' and previous.order_id == order.id:
+            previous.status = 'unused'
+            previous.used_at = None
+            previous.order_id = None
+        order.coupon_id = None
+
+    if not coupon_id:
+        order.coupon_id = None
+        order.discount_amount = Decimal('0')
+        order.payable_total = order.estimated_total
+        return
+
+    coupon = (
+        db.query(CustomerCoupon)
+        .filter(CustomerCoupon.id == coupon_id, CustomerCoupon.customer_id == customer.id)
+        .first()
+    )
+    if not coupon:
+        raise HTTPException(status_code=400, detail='优惠券不存在或不属于当前账号')
+    # 允许编辑时重复提交本订单已占用的同一张券
+    reused_on_this_order = coupon.status == 'used' and order.id is not None and coupon.order_id == order.id
+    if coupon.status != 'unused' and not reused_on_this_order:
+        raise HTTPException(status_code=400, detail='优惠券已被使用')
+    if coupon.expires_at < now:
+        raise HTTPException(status_code=400, detail='优惠券已过期')
+    if order.estimated_total < Decimal(coupon.min_spend or 0):
+        raise HTTPException(status_code=400, detail='订单金额未达到优惠券使用门槛')
+
+    discount = compute_discount(coupon, order.estimated_total)
+    payable = order.estimated_total - discount
+    order.coupon_id = coupon.id
+    order.discount_amount = discount
+    order.payable_total = payable if payable > 0 else Decimal('0')
+    coupon.status = 'used'
+    coupon.used_at = now
+    # 新建订单此时尚未落库，flush 拿到 order.id 以回写券的 order_id
+    if order not in db:
+        db.add(order)
+    db.flush()
+    coupon.order_id = order.id
 
 
 def _order_no() -> str:
@@ -282,6 +332,9 @@ def _attach_phone_to_customer(db: Session, customer: Customer, phone: str) -> Cu
     elif existing:
         raise HTTPException(status_code=409, detail='Phone number is already bound')
     customer.phone = phone
+    if customer.verification_status == 'verified':
+        # 合并到已认证的手机号记录时补发认证券（幂等，不会重复发）
+        grant_coupons_on_verified(db, customer)
     return customer
 
 
@@ -463,3 +516,29 @@ def my_orders(
         .order_by(Order.id.desc())
         .all()
     )
+
+
+@router.get('/coupons/my', response_model=list[CustomerCouponOut])
+def my_coupons(
+    status: str | None = None,
+    db: Session = Depends(get_db),
+    auth_customer: Customer | None = Depends(get_optional_auth_customer),
+):
+    customer = _current_customer_or_401(auth_customer)
+    coupons = (
+        db.query(CustomerCoupon)
+        .filter(CustomerCoupon.customer_id == customer.id)
+        .order_by(CustomerCoupon.id.desc())
+        .all()
+    )
+    now = datetime.now()
+    result: list[CustomerCouponOut] = []
+    for coupon in coupons:
+        # 未使用但已过期的券，动态呈现为 expired（不改动库中状态）
+        effective_status = 'expired' if (coupon.status == 'unused' and coupon.expires_at < now) else coupon.status
+        if status and effective_status != status:
+            continue
+        data = CustomerCouponOut.model_validate(coupon)
+        data.status = effective_status
+        result.append(data)
+    return result

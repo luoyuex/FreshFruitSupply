@@ -5,6 +5,7 @@ export const ADMIN_NAV_ITEMS = [
   { key: 'stats', label: '统计', url: '/pages/admin/stats/index' },
   { key: 'verifications', label: '认证', url: '/pages/admin/verifications/index' },
   { key: 'fruits', label: '报价', url: '/pages/admin/fruits/index' },
+  { key: 'coupons', label: '卡券', url: '/pages/admin/coupons/index' },
   { key: 'users', label: '用户', url: '/pages/admin/users/index' },
 ]
 

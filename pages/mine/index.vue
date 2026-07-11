@@ -12,6 +12,7 @@ const orders = shallowRef([])
 const loading = shallowRef(false)
 const loggedIn = shallowRef(hasCustomerLogin())
 const adminEntryVisible = shallowRef(false)
+const couponCount = shallowRef(0)
 
 const isLoggedIn = computed(() => loggedIn.value)
 const displayName = computed(() => {
@@ -33,6 +34,7 @@ async function loadMine() {
     customer.value = null
     orders.value = []
     adminEntryVisible.value = false
+    couponCount.value = 0
     return
   }
   loading.value = true
@@ -46,12 +48,14 @@ async function loadMine() {
       uni.removeStorageSync('customer_phone')
     }
     uni.setStorageSync('verification_status', customer.value?.verification_status || 'unverified')
-    const [myOrders, adminEntry] = await Promise.all([
+    const [myOrders, adminEntry, myCoupons] = await Promise.all([
       request({ url: '/orders/my' }),
       request({ url: '/admin/entry-visible' }).catch(() => ({ visible: false })),
+      request({ url: '/coupons/my?status=unused' }).catch(() => []),
     ])
     orders.value = myOrders
     adminEntryVisible.value = Boolean(adminEntry.visible)
+    couponCount.value = Array.isArray(myCoupons) ? myCoupons.length : 0
   } catch (err) {
     uni.showToast({ title: err.message, icon: 'none' })
   } finally {
@@ -101,6 +105,11 @@ async function goAddress() {
   uni.navigateTo({ url: '/pages/address/index' })
 }
 
+async function goCoupons() {
+  if (!(await ensureLogin())) return
+  uni.navigateTo({ url: '/pages/coupon/index' })
+}
+
 function goAgreement() {
   uni.navigateTo({ url: '/pages/agreement/index' })
 }
@@ -117,6 +126,7 @@ function logout() {
       customer.value = null
       orders.value = []
       adminEntryVisible.value = false
+      couponCount.value = 0
       uni.showToast({ title: '已退出', icon: 'success' })
     },
   })
@@ -175,8 +185,8 @@ defineExpose({
       </view>
     </view>
 
-    <view class="coupon-card">
-      <view class="coupon-number">0张</view>
+    <view class="coupon-card" @tap="goCoupons">
+      <view class="coupon-number">{{ couponCount }}张</view>
       <view class="coupon-label">红包/卡券</view>
     </view>
 
@@ -232,7 +242,7 @@ defineExpose({
       <text class="admin-arrow">›</text>
     </view>
 
-    <view class="logout-card" @tap="logout">
+    <view v-if="isLoggedIn" class="logout-card" @tap="logout">
       <image class="logout-icon" src="/static/icons/log-out.svg" mode="aspectFit" />
       <text>退出登录</text>
     </view>

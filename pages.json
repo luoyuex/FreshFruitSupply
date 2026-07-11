@@ -64,6 +64,13 @@
       }
     },
     {
+      "path": "pages/coupon/index",
+      "style": {
+        "navigationBarTitleText": "我的卡券",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
       "path": "pages/verify/index",
       "style": {
         "navigationBarTitleText": "客户认证",
@@ -108,6 +115,13 @@
       "path": "pages/admin/fruits/index",
       "style": {
         "navigationBarTitleText": "报价管理",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/admin/coupons/index",
+      "style": {
+        "navigationBarTitleText": "券种管理",
         "enablePullDownRefresh": true
       }
     },

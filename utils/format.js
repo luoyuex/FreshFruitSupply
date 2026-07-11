@@ -19,6 +19,9 @@ export function statusLabel(status) {
     rejected: '未通过',
     failed: '邮件失败',
     sent: '已通知',
+    unused: '未使用',
+    used: '已使用',
+    expired: '已过期',
   }
   return labels[status] || status || '未知'
 }
@@ -49,4 +52,15 @@ export function shortDateTime(value) {
   const hour = String(date.getHours()).padStart(2, '0')
   const minute = String(date.getMinutes()).padStart(2, '0')
   return `${month}-${day} ${hour}:${minute}`
+}
+
+// 券有效期展示：YYYY.MM.DD（现有 shortDateTime 无年份，不适合有效期）
+export function dateText(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}.${month}.${day}`
 }
