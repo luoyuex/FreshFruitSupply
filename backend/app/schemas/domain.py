@@ -248,6 +248,10 @@ class CouponTemplateUpsert(BaseModel):
     is_active: bool = True
 
 
+class CouponGrantIn(BaseModel):
+    template_id: int
+
+
 class CustomerCouponOut(BaseModel):
     id: int
     name: str

@@ -12,8 +12,8 @@ from app.api.deps import admin_permissions, get_current_admin, get_optional_auth
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db.session import get_db
 from app.models import Admin, CouponTemplate, Customer, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, PriceQuote
-from app.schemas import AdminAuthOut, AdminEntryVisibleOut, AdminLogin, AdminOut, AdminPasswordUpdate, AdminUpsert, CouponTemplateOut, CouponTemplateUpsert, CustomerAdminOut, FruitCategoryOut, FruitCategoryUpsert, FruitOut, FruitUpsert, OrderBulkStatusUpdate, OrderOut, OrderStatusUpdate, SalesStatsOut, VerificationReview
-from app.services.coupon import grant_coupons_on_verified
+from app.schemas import AdminAuthOut, AdminEntryVisibleOut, AdminLogin, AdminOut, AdminPasswordUpdate, AdminUpsert, CouponGrantIn, CouponTemplateOut, CouponTemplateUpsert, CustomerAdminOut, CustomerCouponOut, FruitCategoryOut, FruitCategoryUpsert, FruitOut, FruitUpsert, OrderBulkStatusUpdate, OrderOut, OrderStatusUpdate, SalesStatsOut, VerificationReview
+from app.services.coupon import grant_coupon_to_customer, grant_coupons_on_verified
 from app.services.upload import save_upload, to_public_url, to_public_urls, to_storage_path, to_storage_paths
 
 router = APIRouter(prefix='/admin')
@@ -447,6 +447,26 @@ def update_coupon_template(
     db.commit()
     db.refresh(template)
     return template
+
+
+@router.post('/customers/{customer_id}/coupons', response_model=CustomerCouponOut)
+def grant_customer_coupon(
+    customer_id: int,
+    payload: CouponGrantIn,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(require_admin_permission('coupons')),
+):
+    """后台手动发券给指定用户（补偿场景）：从券种快照一张券，source='admin'。"""
+    customer = db.query(Customer).filter(Customer.id == customer_id).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail='用户不存在')
+    template = db.query(CouponTemplate).filter(CouponTemplate.id == payload.template_id).first()
+    if not template:
+        raise HTTPException(status_code=404, detail='券种不存在')
+    coupon = grant_coupon_to_customer(db, customer, template)
+    db.commit()
+    db.refresh(coupon)
+    return coupon
 
 
 @router.post('/fruits', response_model=FruitOut)

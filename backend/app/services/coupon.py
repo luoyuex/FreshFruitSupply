@@ -6,6 +6,31 @@ from sqlalchemy.orm import Session
 from app.models import CouponTemplate, Customer, CustomerCoupon
 
 
+def _build_customer_coupon(customer: Customer, template: CouponTemplate, source: str, now: datetime) -> CustomerCoupon:
+    """按模板快照生成一张用户券实例。模板后续改动不影响已发出的券。"""
+    return CustomerCoupon(
+        customer_id=customer.id,
+        template_id=template.id,
+        name=template.name,
+        amount=template.amount,
+        min_spend=template.min_spend,
+        status='unused',
+        source=source,
+        issued_at=now,
+        expires_at=now + timedelta(days=template.valid_days),
+    )
+
+
+def grant_coupon_to_customer(db: Session, customer: Customer, template: CouponTemplate) -> CustomerCoupon:
+    """后台手动发一张券给指定用户（补偿场景）。
+
+    source='admin'，且不校验 per_customer_limit——管理员主动补偿应始终成功。调用方负责随后 commit。
+    """
+    coupon = _build_customer_coupon(customer, template, 'admin', datetime.now())
+    db.add(coupon)
+    return coupon
+
+
 def grant_coupons_on_verified(db: Session, customer: Customer) -> list[CustomerCoupon]:
     """认证通过时，发放所有配置为 grant_on_verified 的券。
 
@@ -30,17 +55,7 @@ def grant_coupons_on_verified(db: Session, customer: Customer) -> list[CustomerC
         )
         if held >= template.per_customer_limit:
             continue
-        coupon = CustomerCoupon(
-            customer_id=customer.id,
-            template_id=template.id,
-            name=template.name,
-            amount=template.amount,
-            min_spend=template.min_spend,
-            status='unused',
-            source='verified',
-            issued_at=now,
-            expires_at=now + timedelta(days=template.valid_days),
-        )
+        coupon = _build_customer_coupon(customer, template, 'verified', now)
         db.add(coupon)
         granted.append(coupon)
     return granted

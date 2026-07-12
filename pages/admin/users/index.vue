@@ -7,6 +7,7 @@ import { goAdminNav, redirectIfNoPermission, visibleAdminNavItems } from '../../
 
 const admins = shallowRef([])
 const customers = shallowRef([])
+const templates = shallowRef([])
 const loading = shallowRef(false)
 const saving = shallowRef(false)
 const activeTab = shallowRef('admins')
@@ -14,6 +15,11 @@ const adminModalVisible = shallowRef(false)
 const passwordModalVisible = shallowRef(false)
 const editingAdminId = shallowRef(null)
 const passwordAdminId = shallowRef(null)
+// 发券给客户（补偿）
+const grantVisible = shallowRef(false)
+const granting = shallowRef(false)
+const grantCustomer = shallowRef(null)
+const activeTemplates = computed(() => templates.value.filter((item) => item.is_active))
 const roleOptions = [
   { value: 'super_admin', label: '超级管理员' },
   { value: 'order_admin', label: '订单管理员' },
@@ -33,12 +39,14 @@ async function loadAll() {
   if (redirectIfNoPermission('users')) return
   loading.value = true
   try {
-    const [adminRows, customerRows] = await Promise.all([
+    const [adminRows, customerRows, templateRows] = await Promise.all([
       request({ url: '/admin/admin-users', admin: true }),
       request({ url: '/admin/customers', admin: true }),
+      request({ url: '/admin/coupon-templates', admin: true }),
     ])
     admins.value = adminRows
     customers.value = customerRows
+    templates.value = templateRows
   } catch (err) {
     uni.showToast({ title: err.message, icon: 'none' })
     if (err.message.includes('token') || err.message.includes('Missing')) {
@@ -95,6 +103,28 @@ function openCustomerAdminModal(customer) {
 
 function isCustomerAdmin(customer) {
   return Boolean(customer.wechat_openid && adminOpenids.value.has(customer.wechat_openid))
+}
+
+function openGrant(customer) {
+  if (!activeTemplates.value.length) {
+    uni.showToast({ title: '暂无启用中的券种', icon: 'none' })
+    return
+  }
+  grantCustomer.value = customer
+  grantVisible.value = true
+}
+
+async function handleGrant({ customerId, templateId }) {
+  granting.value = true
+  try {
+    await request({ url: `/admin/customers/${customerId}/coupons`, method: 'POST', admin: true, data: { template_id: templateId } })
+    grantVisible.value = false
+    uni.showToast({ title: '已发放', icon: 'success' })
+  } catch (err) {
+    uni.showToast({ title: err.message, icon: 'none' })
+  } finally {
+    granting.value = false
+  }
 }
 
 function closeAdminModal() {
@@ -228,6 +258,7 @@ onPullDownRefresh(async () => {
         <view class="info">联系人：{{ customer.contact_name || '-' }} · {{ customer.business_type || '-' }}</view>
         <view class="info">最近下单：{{ shortDateTime(customer.latest_order_at) || '-' }}</view>
         <view class="actions">
+          <button class="action" @tap="openGrant(customer)">发券</button>
           <button
             class="action"
             :class="{ ghost: isCustomerAdmin(customer) || !customer.wechat_openid }"
@@ -265,6 +296,15 @@ onPullDownRefresh(async () => {
         <button class="save" :loading="saving" @tap="resetPassword">确认重置</button>
       </view>
     </view>
+
+    <coupon-grant-modal
+      :visible="grantVisible"
+      :templates="activeTemplates"
+      :customer="grantCustomer"
+      :saving="granting"
+      @close="grantVisible = false"
+      @confirm="handleGrant"
+    />
   </view>
 </template>
 

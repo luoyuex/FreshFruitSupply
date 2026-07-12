@@ -12,6 +12,12 @@ const modalVisible = shallowRef(false)
 const editingId = shallowRef(null)
 const navItems = computed(() => visibleAdminNavItems())
 
+// 发券给指定用户（补偿）
+const grantVisible = shallowRef(false)
+const granting = shallowRef(false)
+const customers = shallowRef([])
+const activeTemplates = computed(() => templates.value.filter((item) => item.is_active))
+
 const form = reactive({
   name: '',
   amount: '',
@@ -102,6 +108,35 @@ async function save() {
   }
 }
 
+async function openGrant() {
+  if (!activeTemplates.value.length) {
+    uni.showToast({ title: '请先创建并启用券种', icon: 'none' })
+    return
+  }
+  if (!customers.value.length) {
+    try {
+      customers.value = await request({ url: '/admin/customers', admin: true })
+    } catch (err) {
+      uni.showToast({ title: err.message, icon: 'none' })
+      return
+    }
+  }
+  grantVisible.value = true
+}
+
+async function handleGrant({ customerId, templateId }) {
+  granting.value = true
+  try {
+    await request({ url: `/admin/customers/${customerId}/coupons`, method: 'POST', admin: true, data: { template_id: templateId } })
+    grantVisible.value = false
+    uni.showToast({ title: '已发放', icon: 'success' })
+  } catch (err) {
+    uni.showToast({ title: err.message, icon: 'none' })
+  } finally {
+    granting.value = false
+  }
+}
+
 function guardedLoad() {
   if (redirectIfNoPermission('coupons')) return
   loadTemplates()
@@ -125,7 +160,10 @@ onPullDownRefresh(async () => {
       <button v-for="item in navItems" :key="item.key" class="nav-button" :class="{ active: item.key === 'coupons' }" @tap="goAdminNav(item)">{{ item.label }}</button>
     </view>
 
-    <button class="create-btn" @tap="openCreate">+ 新建券种</button>
+    <view class="top-actions">
+      <button class="create-btn" @tap="openCreate">+ 新建券种</button>
+      <button class="grant-btn" @tap="openGrant">发券给用户</button>
+    </view>
 
     <view v-if="loading && !templates.length" class="empty">正在加载券种...</view>
     <view v-else-if="!templates.length" class="empty">还没有券种，点击上方新建</view>
@@ -177,6 +215,15 @@ onPullDownRefresh(async () => {
         </view>
       </view>
     </view>
+
+    <coupon-grant-modal
+      :visible="grantVisible"
+      :templates="activeTemplates"
+      :customers="customers"
+      :saving="granting"
+      @close="grantVisible = false"
+      @confirm="handleGrant"
+    />
   </view>
 </template>
 
@@ -187,16 +234,24 @@ onPullDownRefresh(async () => {
 .nav-button.active { color: #fff; background: #2f6b23; }
 .nav-button::after { border: none; }
 
-.create-btn {
+.top-actions { display: flex; gap: 14rpx; }
+.create-btn, .grant-btn {
+  flex: 1;
   height: 84rpx;
   line-height: 84rpx;
   border-radius: 18rpx;
-  color: #fff;
-  background: #2f6b23;
   font-size: 28rpx;
   font-weight: 800;
 }
-.create-btn::after { border: none; }
+.create-btn {
+  color: #fff;
+  background: #2f6b23;
+}
+.grant-btn {
+  color: #2f6b23;
+  background: #eef7e6;
+}
+.create-btn::after, .grant-btn::after { border: none; }
 
 .card, .empty { margin-top: 18rpx; padding: 24rpx; border-radius: 26rpx; background: #fff; box-shadow: 0 10rpx 26rpx rgba(73,83,47,.08); }
 .empty { text-align: center; color: #7a8a72; font-size: 26rpx; }
