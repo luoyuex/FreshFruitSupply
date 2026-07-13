@@ -36,11 +36,16 @@ const selectedCoupon = shallowRef(null)
 const couponPickerVisible = shallowRef(false)
 const couponManuallySet = shallowRef(false)
 
+// 配送费配置：包邮门槛与配送费，由后台配置，下单页据此估算
+const deliveryConfig = reactive({ freeThreshold: 120, fee: 10 })
+
 const isVerified = computed(() => customer.value?.verification_status === 'verified')
 const isEditMode = computed(() => Boolean(editingOrderId.value))
 const estimatedTotal = computed(() => orderItems.value.reduce((sum, item) => sum + activePrice(item) * Number(item.quantity || 0), 0))
 const couponDiscountValue = computed(() => couponDiscount(selectedCoupon.value, estimatedTotal.value))
-const payableTotal = computed(() => Math.max(0, estimatedTotal.value - couponDiscountValue.value))
+// 配送费按商品原价合计判断门槛（不扣券），与后端口径一致
+const deliveryFee = computed(() => (estimatedTotal.value >= deliveryConfig.freeThreshold ? 0 : deliveryConfig.fee))
+const payableTotal = computed(() => Math.max(0, estimatedTotal.value - couponDiscountValue.value) + deliveryFee.value)
 const usableCouponCount = computed(() => availableCoupons.value.filter((item) => isCouponUsable(item, estimatedTotal.value)).length)
 const filteredFruitOptions = computed(() => {
   const keyword = productKeyword.value.trim().toLowerCase()
@@ -181,6 +186,16 @@ async function loadCustomer() {
     orderItems.value = orderItems.value.map((item) => ({ ...item, price: activePrice(item) }))
   } catch (err) {
     customer.value = null
+  }
+}
+
+async function loadDeliveryConfig() {
+  try {
+    const config = await request({ url: '/settings/delivery' })
+    deliveryConfig.freeThreshold = Number(config.free_threshold ?? deliveryConfig.freeThreshold)
+    deliveryConfig.fee = Number(config.fee ?? deliveryConfig.fee)
+  } catch (err) {
+    // 配置拉取失败时沿用默认值，不阻断下单
   }
 }
 
@@ -450,6 +465,7 @@ async function submitOrder() {
 
 async function reloadOrder(query = pageQuery.value) {
   await loadCustomer()
+  loadDeliveryConfig()
   editingOrderId.value = query.edit || ''
   editAllowed.value = true
   if (editingOrderId.value) {
@@ -529,6 +545,15 @@ onPullDownRefresh(async () => {
         <text class="coupon-row-arrow">›</text>
       </view>
     </view>
+
+    <view class="coupon-row fee-row">
+      <text class="coupon-row-label">配送费</text>
+      <view class="coupon-row-value">
+        <text v-if="deliveryFee > 0" class="fee-amount">+¥{{ money(deliveryFee) }}</text>
+        <text v-else class="fee-free">已包邮</text>
+      </view>
+    </view>
+    <view v-if="deliveryFee > 0" class="fee-tip">再买 ¥{{ money(deliveryConfig.freeThreshold - estimatedTotal) }} 即可包邮（满{{ money(deliveryConfig.freeThreshold) }}免配送费）</view>
 
     <view class="card">
       <view class="card-title-row">
@@ -636,6 +661,7 @@ onPullDownRefresh(async () => {
     <view class="bottom-bar">
       <view class="bottom-total">
         <view>合计 <text>¥{{ money(payableTotal) }}</text></view>
+        <view v-if="deliveryFee > 0" class="bottom-fee">含配送费 ¥{{ money(deliveryFee) }}</view>
         <view v-if="couponDiscountValue > 0" class="bottom-saved">已优惠 ¥{{ money(couponDiscountValue) }}</view>
       </view>
       <button class="submit" :loading="submitting" :disabled="submitting || loading || (isEditMode && !editAllowed)" @tap="submitOrder">{{ isEditMode ? (editAllowed ? '保存修改' : '已截止修改') : '提交预订' }}</button>
@@ -1025,6 +1051,12 @@ onPullDownRefresh(async () => {
   font-size: 22rpx;
 }
 
+.bottom-fee {
+  margin-top: 2rpx;
+  color: #888;
+  font-size: 22rpx;
+}
+
 .coupon-row {
   display: flex;
   align-items: center;
@@ -1042,6 +1074,16 @@ onPullDownRefresh(async () => {
 .coupon-row-hint { color: #ff8a00; font-size: 27rpx; font-weight: 700; }
 .coupon-row-none { color: #999; font-size: 27rpx; }
 .coupon-row-arrow { color: #bbb; font-size: 34rpx; }
+
+/* 配送费行紧贴优惠券行，避免两块卡片间距过大 */
+.fee-row { margin-top: 0; }
+.fee-amount { color: #f20d2f; font-size: 30rpx; font-weight: 900; }
+.fee-free { color: #2f6b23; font-size: 27rpx; font-weight: 800; }
+.fee-tip {
+  margin: 12rpx 26rpx 0;
+  color: #ff6a00;
+  font-size: 23rpx;
+}
 
 .coupon-modal {
   width: 100%;

@@ -197,6 +197,7 @@ class OrderOut(BaseModel):
     status: str
     estimated_total: Decimal
     discount_amount: Decimal = Decimal('0')
+    delivery_fee: Decimal = Decimal('0')
     payable_total: Decimal = Decimal('0')
     coupon_id: int | None = None
     receiver_name: str
@@ -265,6 +266,17 @@ class CustomerCouponOut(BaseModel):
     order_id: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class DeliveryConfigOut(BaseModel):
+    # 包邮门槛与配送费，前端下单页据此估算、后台设置页据此回填
+    free_threshold: Decimal
+    fee: Decimal
+
+
+class DeliveryConfigUpdate(BaseModel):
+    free_threshold: Decimal = Field(ge=0)
+    fee: Decimal = Field(ge=0)
 
 
 class SalesStatsItemOut(BaseModel):

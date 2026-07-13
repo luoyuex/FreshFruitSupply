@@ -9,9 +9,10 @@ from app.api.deps import get_optional_auth_customer
 from app.db.session import get_db
 from app.models import Customer, CustomerAddress, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, OrderItem
 from app.models.domain import CHINA_TZ
-from app.schemas import CustomerAddressOut, CustomerAddressUpsert, CustomerCouponOut, CustomerOut, CustomerProfileUpdate, FruitCategoryOut, FruitOut, OrderCreate, OrderOut, VerificationOut
+from app.schemas import CustomerAddressOut, CustomerAddressUpsert, CustomerCouponOut, CustomerOut, CustomerProfileUpdate, DeliveryConfigOut, FruitCategoryOut, FruitOut, OrderCreate, OrderOut, VerificationOut
 from app.services.coupon import compute_discount, effective_coupon_status, grant_coupons_on_verified
 from app.services.customer import get_or_create_customer
+from app.services.settings import compute_delivery_fee, get_delivery_config
 from app.services.email import send_order_email
 from app.services.upload import save_upload, to_public_urls
 
@@ -66,6 +67,19 @@ def _apply_order_payload(order: Order, customer: Customer, payload: OrderCreate,
         ))
     order.estimated_total = estimated_total
     _apply_coupon(order, customer, payload.coupon_id, db)
+    _apply_delivery_fee(order, db)
+
+
+def _apply_delivery_fee(order: Order, db: Session) -> None:
+    """按后台配置的包邮门槛/配送费，给订单加配送费并计入实付。
+
+    配送费按商品原价合计判断门槛（不扣券），作为独立一行叠加在券后实付之上。
+    须在 _apply_coupon 之后调用（依赖其算好的 payable_total）。
+    """
+    threshold, fee = get_delivery_config(db)
+    delivery_fee = compute_delivery_fee(order.estimated_total, threshold, fee)
+    order.delivery_fee = delivery_fee
+    order.payable_total = order.payable_total + delivery_fee
 
 
 def _apply_coupon(order: Order, customer: Customer, coupon_id: int | None, db: Session) -> None:
@@ -181,6 +195,12 @@ def list_categories(db: Session = Depends(get_db)):
         .order_by(FruitCategory.sort_order.asc(), FruitCategory.id.asc())
         .all()
     )
+
+
+@router.get('/settings/delivery', response_model=DeliveryConfigOut)
+def get_delivery_settings(db: Session = Depends(get_db)):
+    threshold, fee = get_delivery_config(db)
+    return DeliveryConfigOut(free_threshold=threshold, fee=fee)
 
 
 @router.get('/fruits', response_model=list[FruitOut])

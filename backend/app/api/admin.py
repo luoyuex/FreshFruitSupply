@@ -12,8 +12,9 @@ from app.api.deps import admin_permissions, get_current_admin, get_optional_auth
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db.session import get_db
 from app.models import Admin, CouponTemplate, Customer, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, PriceQuote
-from app.schemas import AdminAuthOut, AdminEntryVisibleOut, AdminLogin, AdminOut, AdminPasswordUpdate, AdminUpsert, CouponGrantIn, CouponTemplateOut, CouponTemplateUpsert, CustomerAdminOut, CustomerCouponOut, FruitCategoryOut, FruitCategoryUpsert, FruitOut, FruitUpsert, OrderBulkStatusUpdate, OrderOut, OrderStatusUpdate, SalesStatsOut, VerificationReview
+from app.schemas import AdminAuthOut, AdminEntryVisibleOut, AdminLogin, AdminOut, AdminPasswordUpdate, AdminUpsert, CouponGrantIn, CouponTemplateOut, CouponTemplateUpsert, CustomerAdminOut, CustomerCouponOut, DeliveryConfigOut, DeliveryConfigUpdate, FruitCategoryOut, FruitCategoryUpsert, FruitOut, FruitUpsert, OrderBulkStatusUpdate, OrderOut, OrderStatusUpdate, SalesStatsOut, VerificationReview
 from app.services.coupon import effective_coupon_status, grant_coupon_to_customer, grant_coupons_on_verified
+from app.services.settings import DELIVERY_FEE_KEY, DELIVERY_FREE_THRESHOLD_KEY, get_delivery_config, set_setting
 from app.services.upload import save_upload, to_public_url, to_public_urls, to_storage_path, to_storage_paths
 
 router = APIRouter(prefix='/admin')
@@ -467,6 +468,29 @@ def grant_customer_coupon(
     db.commit()
     db.refresh(coupon)
     return coupon
+
+
+@router.get('/settings/delivery', response_model=DeliveryConfigOut)
+def get_delivery_settings(
+    db: Session = Depends(get_db),
+    _: Admin = Depends(require_admin_permission('settings')),
+):
+    threshold, fee = get_delivery_config(db)
+    return DeliveryConfigOut(free_threshold=threshold, fee=fee)
+
+
+@router.patch('/settings/delivery', response_model=DeliveryConfigOut)
+def update_delivery_settings(
+    payload: DeliveryConfigUpdate,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(require_admin_permission('settings')),
+):
+    # 以字符串存储，读取侧统一转 Decimal；改动即时对新提交/修改的订单生效
+    set_setting(db, DELIVERY_FREE_THRESHOLD_KEY, format(payload.free_threshold, 'f'))
+    set_setting(db, DELIVERY_FEE_KEY, format(payload.fee, 'f'))
+    db.commit()
+    threshold, fee = get_delivery_config(db)
+    return DeliveryConfigOut(free_threshold=threshold, fee=fee)
 
 
 @router.get('/customers/{customer_id}/coupons', response_model=list[CustomerCouponOut])

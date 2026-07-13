@@ -13,6 +13,9 @@ def seed(db: Session) -> None:
         'supplier_phone': '13800000000',
         'supplier_wechat': 'fruit-supplier',
         'notice': '价格随行情波动，提交预订后以电话确认为准。',
+        # 配送费规则：商品原价合计低于 120 元收取 10 元配送费，可在后台修改
+        'delivery_free_threshold': '120',
+        'delivery_fee': '10',
     }
     for key, value in settings.items():
         if not db.query(SystemSetting).filter(SystemSetting.key == key).first():

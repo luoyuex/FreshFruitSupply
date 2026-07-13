@@ -23,7 +23,11 @@ def _build_order_body(order: Order) -> str:
     lines.extend(['', f'预估总价：{order.estimated_total}'])
     if order.discount_amount and order.discount_amount > 0:
         lines.append(f'优惠券抵扣：-{order.discount_amount}')
-        lines.append(f'实付：{order.payable_total}')
+    if order.delivery_fee and order.delivery_fee > 0:
+        lines.append(f'配送费：+{order.delivery_fee}')
+    else:
+        lines.append('配送费：免（已满包邮门槛）')
+    lines.append(f'实付：{order.payable_total}')
     return '\n'.join(lines)
 
 

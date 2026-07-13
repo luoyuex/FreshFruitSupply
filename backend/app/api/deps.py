@@ -6,7 +6,7 @@ from app.db.session import get_db
 from app.models import Admin, Customer
 
 ADMIN_PERMISSIONS = {
-    'super_admin': ['orders', 'verifications', 'fruits', 'stats', 'users', 'coupons'],
+    'super_admin': ['orders', 'verifications', 'fruits', 'stats', 'users', 'coupons', 'settings'],
     'order_admin': ['orders'],
 }
 

@@ -131,6 +131,13 @@
         "navigationBarTitleText": "用户管理",
         "enablePullDownRefresh": true
       }
+    },
+    {
+      "path": "pages/admin/settings/index",
+      "style": {
+        "navigationBarTitleText": "系统设置",
+        "enablePullDownRefresh": true
+      }
     }
   ],
   "globalStyle": {

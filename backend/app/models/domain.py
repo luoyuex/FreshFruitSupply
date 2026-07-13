@@ -169,6 +169,7 @@ class Order(TimestampMixin, Base):
     email_notify_status: Mapped[str] = mapped_column(String(32), default='pending')
     coupon_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     discount_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
+    delivery_fee: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
     payable_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
 
     customer: Mapped[Customer] = relationship(back_populates='orders')

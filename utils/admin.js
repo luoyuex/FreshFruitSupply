@@ -7,6 +7,7 @@ export const ADMIN_NAV_ITEMS = [
   { key: 'fruits', label: '报价', url: '/pages/admin/fruits/index' },
   { key: 'coupons', label: '卡券', url: '/pages/admin/coupons/index' },
   { key: 'users', label: '用户', url: '/pages/admin/users/index' },
+  { key: 'settings', label: '设置', url: '/pages/admin/settings/index' },
 ]
 
 export function getAdminPermissions() {

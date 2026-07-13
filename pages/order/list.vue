@@ -139,9 +139,10 @@ onPullDownRefresh(async () => {
 
       <view class="order-bottom">
         <view>
-          <view v-if="Number(order.discount_amount) > 0" class="total">实付 ¥{{ money(order.payable_total) }}</view>
+          <view v-if="Number(order.discount_amount) > 0 || Number(order.delivery_fee) > 0" class="total">实付 ¥{{ money(order.payable_total) }}</view>
           <view v-else class="total">预估总价 ¥{{ money(order.estimated_total) }}</view>
           <view v-if="Number(order.discount_amount) > 0" class="saved-line">已优惠 ¥{{ money(order.discount_amount) }} · 原价 ¥{{ money(order.estimated_total) }}</view>
+          <view v-if="Number(order.delivery_fee) > 0" class="fee-line">含配送费 ¥{{ money(order.delivery_fee) }}</view>
           <view class="edit-hint">{{ orderEditReason(order) }}</view>
         </view>
         <button class="edit-order" :class="{ disabled: !order.can_edit }" @tap="editOrder(order)">修改订单</button>
@@ -311,6 +312,12 @@ onPullDownRefresh(async () => {
 .saved-line {
   margin-top: 6rpx;
   color: #ff6a00;
+  font-size: 23rpx;
+}
+
+.fee-line {
+  margin-top: 6rpx;
+  color: #999;
   font-size: 23rpx;
 }
 
