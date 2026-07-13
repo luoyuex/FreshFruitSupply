@@ -1,6 +1,5 @@
 import json
 from datetime import datetime, time
-from zoneinfo import ZoneInfo
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -9,8 +8,9 @@ from sqlalchemy.orm import Session, joinedload
 from app.api.deps import get_optional_auth_customer
 from app.db.session import get_db
 from app.models import Customer, CustomerAddress, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, OrderItem
+from app.models.domain import CHINA_TZ
 from app.schemas import CustomerAddressOut, CustomerAddressUpsert, CustomerCouponOut, CustomerOut, CustomerProfileUpdate, FruitCategoryOut, FruitOut, OrderCreate, OrderOut, VerificationOut
-from app.services.coupon import compute_discount, grant_coupons_on_verified
+from app.services.coupon import compute_discount, effective_coupon_status, grant_coupons_on_verified
 from app.services.customer import get_or_create_customer
 from app.services.email import send_order_email
 from app.services.upload import save_upload, to_public_urls
@@ -21,7 +21,7 @@ EDITABLE_ORDER_STATUSES = {'pending', 'confirmed'}
 
 
 def _is_before_order_edit_cutoff() -> bool:
-    return datetime.now(ZoneInfo('Asia/Shanghai')).time() < ORDER_EDIT_CUTOFF
+    return datetime.now(CHINA_TZ).time() < ORDER_EDIT_CUTOFF
 
 
 def _assert_order_editable(order: Order) -> None:
@@ -535,7 +535,7 @@ def my_coupons(
     result: list[CustomerCouponOut] = []
     for coupon in coupons:
         # 未使用但已过期的券，动态呈现为 expired（不改动库中状态）
-        effective_status = 'expired' if (coupon.status == 'unused' and coupon.expires_at < now) else coupon.status
+        effective_status = effective_coupon_status(coupon, now)
         if status and effective_status != status:
             continue
         data = CustomerCouponOut.model_validate(coupon)

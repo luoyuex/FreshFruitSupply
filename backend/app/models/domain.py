@@ -1,12 +1,15 @@
 import json
-from datetime import datetime, time
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
+
+# 中国大陆固定 UTC+8（无夏令时），用固定偏移避免依赖系统/tzdata 的 IANA 时区库
+# （Windows 及精简版 Linux/Docker 镜像常缺 tzdata，ZoneInfo('Asia/Shanghai') 会抛错）
+CHINA_TZ = timezone(timedelta(hours=8))
 
 
 class TimestampMixin:
@@ -173,7 +176,7 @@ class Order(TimestampMixin, Base):
 
     @property
     def can_edit(self) -> bool:
-        now = datetime.now(ZoneInfo('Asia/Shanghai')).time()
+        now = datetime.now(CHINA_TZ).time()
         return self.status in {'pending', 'confirmed'} and now < time(22, 30)
 
 

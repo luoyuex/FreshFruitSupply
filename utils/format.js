@@ -64,3 +64,17 @@ export function dateText(value) {
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}.${month}.${day}`
 }
+
+// 精确到秒的日期时间：YYYY-MM-DD HH:mm:ss（卡券到期等需要精确展示的后台场景）
+export function dateTimeSec(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hour = String(date.getHours()).padStart(2, '0')
+  const minute = String(date.getMinutes()).padStart(2, '0')
+  const second = String(date.getSeconds()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hour}:${minute}:${second}`
+}

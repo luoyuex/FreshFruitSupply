@@ -13,7 +13,7 @@ from app.core.security import create_access_token, hash_password, verify_passwor
 from app.db.session import get_db
 from app.models import Admin, CouponTemplate, Customer, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, PriceQuote
 from app.schemas import AdminAuthOut, AdminEntryVisibleOut, AdminLogin, AdminOut, AdminPasswordUpdate, AdminUpsert, CouponGrantIn, CouponTemplateOut, CouponTemplateUpsert, CustomerAdminOut, CustomerCouponOut, FruitCategoryOut, FruitCategoryUpsert, FruitOut, FruitUpsert, OrderBulkStatusUpdate, OrderOut, OrderStatusUpdate, SalesStatsOut, VerificationReview
-from app.services.coupon import grant_coupon_to_customer, grant_coupons_on_verified
+from app.services.coupon import effective_coupon_status, grant_coupon_to_customer, grant_coupons_on_verified
 from app.services.upload import save_upload, to_public_url, to_public_urls, to_storage_path, to_storage_paths
 
 router = APIRouter(prefix='/admin')
@@ -467,6 +467,48 @@ def grant_customer_coupon(
     db.commit()
     db.refresh(coupon)
     return coupon
+
+
+@router.get('/customers/{customer_id}/coupons', response_model=list[CustomerCouponOut])
+def list_customer_coupons(
+    customer_id: int,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(require_admin_permission('coupons')),
+):
+    """某用户的全部卡券（后台抽屉展示用），已过期未使用的券动态呈现为 expired。"""
+    coupons = (
+        db.query(CustomerCoupon)
+        .filter(CustomerCoupon.customer_id == customer_id)
+        .order_by(CustomerCoupon.id.desc())
+        .all()
+    )
+    now = datetime.now()
+    result: list[CustomerCouponOut] = []
+    for coupon in coupons:
+        data = CustomerCouponOut.model_validate(coupon)
+        data.status = effective_coupon_status(coupon, now)
+        result.append(data)
+    return result
+
+
+@router.delete('/customers/{customer_id}/coupons/{coupon_id}')
+def delete_customer_coupon(
+    customer_id: int,
+    coupon_id: int,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(require_admin_permission('coupons')),
+):
+    """删除某用户的一张券。订单金额为下单时快照，删券不影响历史订单实付。"""
+    coupon = (
+        db.query(CustomerCoupon)
+        .filter(CustomerCoupon.id == coupon_id, CustomerCoupon.customer_id == customer_id)
+        .first()
+    )
+    if not coupon:
+        raise HTTPException(status_code=404, detail='卡券不存在')
+    db.delete(coupon)
+    db.commit()
+    return {'ok': True}
 
 
 @router.post('/fruits', response_model=FruitOut)

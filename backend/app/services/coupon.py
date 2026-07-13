@@ -61,6 +61,13 @@ def grant_coupons_on_verified(db: Session, customer: Customer) -> list[CustomerC
     return granted
 
 
+def effective_coupon_status(coupon: CustomerCoupon, now: datetime) -> str:
+    """未使用但已过期的券动态呈现为 expired（不改动库中状态）。展示口径统一入口。"""
+    if coupon.status == 'unused' and coupon.expires_at < now:
+        return 'expired'
+    return coupon.status
+
+
 def compute_discount(coupon: CustomerCoupon, goods_total: Decimal) -> Decimal:
     """给定券与商品原价合计，返回抵扣额。
 

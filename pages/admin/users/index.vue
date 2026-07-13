@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, shallowRef } from 'vue'
 import { onPullDownRefresh } from '@dcloudio/uni-app'
 import { request } from '../../../utils/request.js'
-import { statusLabel, shortDateTime } from '../../../utils/format.js'
+import { statusLabel, shortDateTime, dateTimeSec, money } from '../../../utils/format.js'
 import { goAdminNav, redirectIfNoPermission, visibleAdminNavItems } from '../../../utils/admin.js'
 
 const admins = shallowRef([])
@@ -20,6 +20,11 @@ const grantVisible = shallowRef(false)
 const granting = shallowRef(false)
 const grantCustomer = shallowRef(null)
 const activeTemplates = computed(() => templates.value.filter((item) => item.is_active))
+// 客户详情底部抽屉（信息 + 卡券列表）
+const drawerVisible = shallowRef(false)
+const drawerCustomer = shallowRef(null)
+const drawerCoupons = shallowRef([])
+const couponLoading = shallowRef(false)
 const roleOptions = [
   { value: 'super_admin', label: '超级管理员' },
   { value: 'order_admin', label: '订单管理员' },
@@ -120,11 +125,66 @@ async function handleGrant({ customerId, templateId }) {
     await request({ url: `/admin/customers/${customerId}/coupons`, method: 'POST', admin: true, data: { template_id: templateId } })
     grantVisible.value = false
     uni.showToast({ title: '已发放', icon: 'success' })
+    // 抽屉开着且发的是同一客户，刷新卡券列表
+    if (drawerVisible.value && drawerCustomer.value?.id === customerId) {
+      await loadCustomerCoupons(customerId)
+    }
   } catch (err) {
     uni.showToast({ title: err.message, icon: 'none' })
   } finally {
     granting.value = false
   }
+}
+
+function customerName(customer) {
+  return customer?.nickname || customer?.shop_name || customer?.phone || '未命名客户'
+}
+
+function sourceLabel(source) {
+  return { verified: '认证发放', admin: '后台发放' }[source] || source || '-'
+}
+
+async function loadCustomerCoupons(customerId) {
+  couponLoading.value = true
+  try {
+    drawerCoupons.value = await request({ url: `/admin/customers/${customerId}/coupons`, admin: true })
+  } catch (err) {
+    uni.showToast({ title: err.message, icon: 'none' })
+    drawerCoupons.value = []
+  } finally {
+    couponLoading.value = false
+  }
+}
+
+function openDrawer(customer) {
+  drawerCustomer.value = customer
+  drawerCoupons.value = []
+  drawerVisible.value = true
+  loadCustomerCoupons(customer.id)
+}
+
+function closeDrawer() {
+  drawerVisible.value = false
+  drawerCustomer.value = null
+  drawerCoupons.value = []
+}
+
+function removeCoupon(coupon) {
+  uni.showModal({
+    title: '删除卡券',
+    content: `确定删除「${coupon.name}」吗？删除后不可恢复。`,
+    confirmColor: '#e64340',
+    success: async (res) => {
+      if (!res.confirm) return
+      try {
+        await request({ url: `/admin/customers/${drawerCustomer.value.id}/coupons/${coupon.id}`, method: 'DELETE', admin: true })
+        uni.showToast({ title: '已删除', icon: 'success' })
+        await loadCustomerCoupons(drawerCustomer.value.id)
+      } catch (err) {
+        uni.showToast({ title: err.message, icon: 'none' })
+      }
+    },
+  })
 }
 
 function closeAdminModal() {
@@ -246,7 +306,7 @@ onPullDownRefresh(async () => {
           <view class="section-sub">查看客户微信、认证和订单概览，可直接把客户微信设为后台管理员。</view>
         </view>
       </view>
-      <view v-for="customer in customers" :key="customer.id" class="card">
+      <view v-for="customer in customers" :key="customer.id" class="card" @tap="openDrawer(customer)">
         <view class="card-head">
           <view>
             <view class="name">{{ customer.nickname || customer.shop_name || customer.phone }}</view>
@@ -258,12 +318,12 @@ onPullDownRefresh(async () => {
         <view class="info">联系人：{{ customer.contact_name || '-' }} · {{ customer.business_type || '-' }}</view>
         <view class="info">最近下单：{{ shortDateTime(customer.latest_order_at) || '-' }}</view>
         <view class="actions">
-          <button class="action" @tap="openGrant(customer)">发券</button>
+          <button class="action ghost" @tap.stop="openDrawer(customer)">详情 / 卡券</button>
           <button
             class="action"
             :class="{ ghost: isCustomerAdmin(customer) || !customer.wechat_openid }"
             :disabled="isCustomerAdmin(customer) || !customer.wechat_openid"
-            @tap="openCustomerAdminModal(customer)"
+            @tap.stop="openCustomerAdminModal(customer)"
           >
             {{ isCustomerAdmin(customer) ? '已开通后台入口' : '设为管理员' }}
           </button>
@@ -305,6 +365,49 @@ onPullDownRefresh(async () => {
       @close="grantVisible = false"
       @confirm="handleGrant"
     />
+
+    <view v-if="drawerVisible" class="drawer-mask" @tap="closeDrawer">
+      <view class="drawer" @tap.stop>
+        <view class="drawer-handle"></view>
+        <view class="drawer-head">
+          <view class="drawer-name">{{ customerName(drawerCustomer) }}</view>
+          <text class="status">{{ statusLabel(drawerCustomer.verification_status) }}</text>
+        </view>
+        <view class="drawer-info">
+          <view class="d-row">手机号：{{ drawerCustomer.phone }}</view>
+          <view class="d-row">店铺：{{ drawerCustomer.shop_name || '-' }} · 联系人：{{ drawerCustomer.contact_name || '-' }}</view>
+          <view class="d-row">经营：{{ drawerCustomer.business_type || '-' }} · 累计 {{ drawerCustomer.order_count }} 单</view>
+          <view class="d-row">微信 openid：{{ drawerCustomer.wechat_openid || '无' }}</view>
+        </view>
+
+        <view class="drawer-sub-head">
+          <text class="sub-title">卡券（{{ drawerCoupons.length }}）</text>
+          <button class="grant-mini" @tap="openGrant(drawerCustomer)">+ 发券</button>
+        </view>
+
+        <scroll-view scroll-y class="coupon-scroll">
+          <view v-if="couponLoading" class="coupon-empty">正在加载卡券...</view>
+          <view v-else-if="!drawerCoupons.length" class="coupon-empty">该用户暂无卡券</view>
+          <view v-for="coupon in drawerCoupons" :key="coupon.id" class="coupon-item" :class="{ dim: coupon.status !== 'unused' }">
+            <view class="ci-face">
+              <view class="ci-amount">¥{{ money(coupon.amount) }}</view>
+              <view class="ci-cond">{{ Number(coupon.min_spend) > 0 ? `满${money(coupon.min_spend)}` : '无门槛' }}</view>
+            </view>
+            <view class="ci-main">
+              <view class="ci-name">{{ coupon.name }}</view>
+              <view class="ci-expire">到期 {{ dateTimeSec(coupon.expires_at) }}</view>
+              <view class="ci-tags">
+                <text class="ci-status" :class="coupon.status">{{ statusLabel(coupon.status) }}</text>
+                <text class="ci-source">{{ sourceLabel(coupon.source) }}</text>
+              </view>
+            </view>
+            <button class="ci-del" @tap="removeCoupon(coupon)">删除</button>
+          </view>
+        </scroll-view>
+
+        <button class="drawer-close" @tap="closeDrawer">关闭</button>
+      </view>
+    </view>
   </view>
 </template>
 
@@ -337,4 +440,34 @@ onPullDownRefresh(async () => {
 .switch-row { display: flex; align-items: center; justify-content: space-between; margin-top: 18rpx; color: #48613b; font-size: 26rpx; }
 .save { margin-top: 24rpx; height: 76rpx; line-height: 76rpx; }
 .add-btn::after, .action::after, .save::after, .nav-button::after, .tab::after { border: none; }
+
+/* 客户详情底部抽屉 */
+.drawer-mask { position: fixed; z-index: 90; left: 0; right: 0; top: 0; bottom: 0; display: flex; align-items: flex-end; background: rgba(16, 28, 12, .45); }
+.drawer { width: 100%; max-height: 84vh; display: flex; flex-direction: column; padding: 16rpx 28rpx calc(28rpx + env(safe-area-inset-bottom)); border-radius: 34rpx 34rpx 0 0; background: #f5f8ef; box-sizing: border-box; }
+.drawer-handle { width: 72rpx; height: 8rpx; margin: 0 auto 18rpx; border-radius: 999rpx; background: #d3ddc9; }
+.drawer-head { display: flex; align-items: center; justify-content: space-between; gap: 18rpx; }
+.drawer-name { color: #173b16; font-size: 34rpx; font-weight: 900; }
+.drawer-info { margin-top: 14rpx; padding: 20rpx 22rpx; border-radius: 20rpx; background: #fff; }
+.d-row { color: #48613b; font-size: 25rpx; line-height: 1.7; }
+.drawer-sub-head { display: flex; align-items: center; justify-content: space-between; margin-top: 22rpx; }
+.sub-title { color: #173b16; font-size: 28rpx; font-weight: 900; }
+.grant-mini { height: 58rpx; line-height: 58rpx; padding: 0 26rpx; border-radius: 999rpx; color: #fff; background: #2f6b23; font-size: 24rpx; font-weight: 800; }
+.coupon-scroll { flex: 1; max-height: 46vh; margin-top: 14rpx; }
+.coupon-empty { padding: 60rpx 0; color: #768273; font-size: 26rpx; text-align: center; }
+.coupon-item { display: flex; align-items: stretch; gap: 18rpx; margin-bottom: 16rpx; padding: 20rpx; border-radius: 20rpx; background: #fff; box-shadow: 0 8rpx 20rpx rgba(73,83,47,.06); }
+.coupon-item.dim { opacity: .55; }
+.ci-face { flex-shrink: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4rpx; width: 150rpx; border-radius: 16rpx; color: #fff; background: linear-gradient(135deg, #ff7a45, #f20d2f); }
+.ci-amount { font-size: 40rpx; font-weight: 900; }
+.ci-cond { font-size: 21rpx; opacity: .95; }
+.ci-main { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 8rpx; }
+.ci-name { color: #173b16; font-size: 28rpx; font-weight: 800; }
+.ci-expire { color: #7a8a72; font-size: 23rpx; }
+.ci-tags { display: flex; gap: 10rpx; }
+.ci-status, .ci-source { padding: 3rpx 14rpx; border-radius: 999rpx; font-size: 21rpx; font-weight: 700; }
+.ci-status { color: #2f6b23; background: #eef7e6; }
+.ci-status.used, .ci-status.expired { color: #999; background: #f0f0f0; }
+.ci-source { color: #b06a00; background: #fff2df; }
+.ci-del { flex-shrink: 0; align-self: center; height: 56rpx; line-height: 56rpx; padding: 0 24rpx; border-radius: 999rpx; color: #e64340; background: #fde9e8; font-size: 24rpx; font-weight: 800; }
+.drawer-close { margin-top: 18rpx; height: 80rpx; line-height: 80rpx; border-radius: 18rpx; color: #555; background: #eef0ea; font-size: 28rpx; font-weight: 800; }
+.grant-mini::after, .ci-del::after, .drawer-close::after { border: none; }
 </style>

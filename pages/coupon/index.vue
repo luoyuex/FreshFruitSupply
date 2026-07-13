@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref, shallowRef } from 'vue'
 import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
-import { dateText, money, statusLabel } from '../../utils/format.js'
+import { dateTimeSec, money, statusLabel } from '../../utils/format.js'
 import { request } from '../../utils/request.js'
 import { hasCustomerLogin, loginWithWeChat } from '../../utils/auth.js'
 
@@ -104,7 +104,7 @@ onPullDownRefresh(async () => {
       </view>
       <view class="coupon-right">
         <view class="name">{{ coupon.name }}</view>
-        <view class="expire">有效期至 {{ dateText(coupon.expires_at) }}</view>
+        <view class="expire">有效期至 {{ dateTimeSec(coupon.expires_at) }}</view>
         <view class="status-tag" :class="coupon.status">{{ statusLabel(coupon.status) }}</view>
       </view>
     </view>
