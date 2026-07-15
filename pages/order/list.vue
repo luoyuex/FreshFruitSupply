@@ -3,10 +3,12 @@ import { computed, ref, shallowRef } from 'vue'
 import { onLoad, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { money, statusLabel } from '../../utils/format.js'
 import { request } from '../../utils/request.js'
+import { payOrder } from '../../utils/pay.js'
 import { hasCustomerLogin, loginWithWeChat } from '../../utils/auth.js'
 
 const tabs = [
   { key: '', label: '全部' },
+  { key: 'unpaid', label: '待支付' },
   { key: 'pending', label: '待确认' },
   { key: 'confirmed', label: '已确认' },
   { key: 'delivering', label: '配送中' },
@@ -17,6 +19,7 @@ const orders = ref([])
 const activeStatus = shallowRef('')
 const loading = shallowRef(false)
 const loginChecked = shallowRef(false)
+const paying = shallowRef(false)
 
 const filteredOrders = computed(() => {
   if (!activeStatus.value) return orders.value
@@ -72,6 +75,48 @@ function editOrder(order) {
     return
   }
   uni.navigateTo({ url: `/pages/order/create?edit=${order.id}` })
+}
+
+async function payOrderNow(order) {
+  if (paying.value) return
+  paying.value = true
+  try {
+    await payOrder(order.id)
+    uni.showToast({ title: '支付成功', icon: 'success' })
+    await loadOrders()
+  } catch (err) {
+    // 支付取消/失败：订单留在“待支付”，不弹错误打断
+    if (err.message && err.message !== '支付已取消') {
+      uni.showToast({ title: err.message, icon: 'none' })
+    }
+  } finally {
+    paying.value = false
+  }
+}
+
+function cancelOrder(order) {
+  const paid = order.status !== 'unpaid'
+  uni.showModal({
+    title: paid ? '取消并退款' : '取消订单',
+    content: paid
+      ? '取消后将原路退还已支付的款项，确认取消该订单？'
+      : '确认取消该待支付订单？',
+    success: async (res) => {
+      if (!res.confirm) return
+      try {
+        await request({ url: `/orders/${order.id}/cancel`, method: 'POST' })
+        uni.showToast({ title: paid ? '已取消，退款处理中' : '订单已取消', icon: 'none' })
+        await loadOrders()
+      } catch (err) {
+        uni.showToast({ title: err.message || '取消失败', icon: 'none' })
+      }
+    },
+  })
+}
+
+// 已付款、未进入配送的订单可由用户取消并触发退款
+function canCancel(order) {
+  return ['unpaid', 'pending', 'confirmed'].includes(order.status)
 }
 
 function goBuy() {
@@ -139,13 +184,19 @@ onPullDownRefresh(async () => {
 
       <view class="order-bottom">
         <view>
-          <view v-if="Number(order.discount_amount) > 0 || Number(order.delivery_fee) > 0" class="total">实付 ¥{{ money(order.payable_total) }}</view>
+          <view v-if="order.status === 'unpaid'" class="total">待支付 ¥{{ money(order.payable_total) }}</view>
+          <view v-else-if="Number(order.discount_amount) > 0 || Number(order.delivery_fee) > 0" class="total">实付 ¥{{ money(order.payable_total) }}</view>
           <view v-else class="total">预估总价 ¥{{ money(order.estimated_total) }}</view>
           <view v-if="Number(order.discount_amount) > 0" class="saved-line">已优惠 ¥{{ money(order.discount_amount) }} · 原价 ¥{{ money(order.estimated_total) }}</view>
           <view v-if="Number(order.delivery_fee) > 0" class="fee-line">含配送费 ¥{{ money(order.delivery_fee) }}</view>
-          <view class="edit-hint">{{ orderEditReason(order) }}</view>
+          <view v-if="order.status === 'unpaid'" class="edit-hint">超时未支付将自动关闭</view>
+          <view v-else class="edit-hint">{{ orderEditReason(order) }}</view>
         </view>
-        <button class="edit-order" :class="{ disabled: !order.can_edit }" @tap="editOrder(order)">修改订单</button>
+        <view class="order-actions">
+          <button v-if="canCancel(order)" class="cancel-order" @tap="cancelOrder(order)">取消订单</button>
+          <button v-if="order.status === 'unpaid'" class="pay-order" :loading="paying" :disabled="paying" @tap="payOrderNow(order)">去支付</button>
+          <button v-else class="edit-order" :class="{ disabled: !order.can_edit }" @tap="editOrder(order)">修改订单</button>
+        </view>
       </view>
     </view>
   </view>
@@ -335,5 +386,39 @@ onPullDownRefresh(async () => {
 .edit-order.disabled {
   color: #999;
   background: #eee;
+}
+
+.order-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12rpx;
+}
+
+.cancel-order {
+  width: 168rpx;
+  height: 62rpx;
+  line-height: 62rpx;
+  border-radius: 999rpx;
+  color: #666;
+  background: #f1f2f4;
+  font-size: 24rpx;
+  font-weight: 900;
+}
+
+.pay-order {
+  width: 168rpx;
+  height: 62rpx;
+  line-height: 62rpx;
+  border-radius: 999rpx;
+  color: #fff;
+  background: #f20d2f;
+  font-size: 24rpx;
+  font-weight: 900;
+}
+
+.cancel-order::after,
+.pay-order::after {
+  border: none;
 }
 </style>

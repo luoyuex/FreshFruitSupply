@@ -52,7 +52,7 @@
     {
       "path": "pages/order/create",
       "style": {
-        "navigationBarTitleText": "提交预订",
+        "navigationBarTitleText": "订单结算",
         "enablePullDownRefresh": true
       }
     },

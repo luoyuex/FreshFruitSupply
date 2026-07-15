@@ -1,11 +1,25 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api import admin, auth, public
 from app.core.config import settings
+from app.services.order_maintenance import start_unpaid_order_closer
 
-app = FastAPI(title=settings.app_name)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动待支付订单超时关单后台任务，应用关闭时取消
+    closer_task = start_unpaid_order_closer()
+    try:
+        yield
+    finally:
+        closer_task.cancel()
+
+
+app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

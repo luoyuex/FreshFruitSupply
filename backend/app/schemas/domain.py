@@ -210,6 +210,8 @@ class OrderOut(BaseModel):
     discount_amount: Decimal = Decimal('0')
     delivery_fee: Decimal = Decimal('0')
     payable_total: Decimal = Decimal('0')
+    # 已成功支付累计；payable_total - paid_amount 即当前待补款金额
+    paid_amount: Decimal = Decimal('0')
     coupon_id: int | None = None
     receiver_name: str
     receiver_phone: str
@@ -227,8 +229,44 @@ class OrderOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PaymentParams(BaseModel):
+    """透传给小程序 uni.requestPayment 的支付参数（Mock 模式带 mock 标记）。"""
+    timeStamp: str
+    nonceStr: str
+    package: str
+    signType: str = 'RSA'
+    paySign: str
+    mock: bool = False
+    out_trade_no: str | None = None
+
+
+class PayResponse(BaseModel):
+    """下单支付/补差价支付接口返回：订单当前状态 + 拉起支付所需参数。"""
+    order_id: int
+    out_trade_no: str
+    amount: Decimal
+    pay_params: PaymentParams
+
+
+class OrderEditResult(BaseModel):
+    """编辑订单结果：不需补款则变更已落库；需补款则变更暂存，待支付成功回调后生效。
+
+    need_payment=False 时 order 为最新订单；need_payment=True 时 order 为编辑前订单，
+    pay 为补差价的拉起支付参数，前端据此拉起支付，成功后暂存的变更才落库。
+    """
+    need_payment: bool
+    supplement_amount: Decimal = Decimal('0')
+    order: OrderOut
+    pay: PayResponse | None = None
+
+
+class MockPaySuccessIn(BaseModel):
+    """Mock 模式联调：按商户订单号模拟支付成功回调。"""
+    out_trade_no: str
+
+
 class OrderStatusUpdate(BaseModel):
-    status: str = Field(pattern='^(pending|confirmed|delivering|completed|cancelled)$')
+    status: str = Field(pattern='^(unpaid|pending|confirmed|delivering|completed|closed|cancelled)$')
 
 
 class OrderBulkStatusUpdate(OrderStatusUpdate):

@@ -5,6 +5,7 @@ import { clearSelectedCartItems } from '../../utils/cart.js'
 import { dateText, fruitIcon, money } from '../../utils/format.js'
 import { couponDiscount, isCouponUsable, isReissueCoupon, pickBestCoupon } from '../../utils/coupon.js'
 import { request } from '../../utils/request.js'
+import { startPayment } from '../../utils/pay.js'
 import { hasCustomerLogin, isPlaceholderPhone, loginWithWeChat } from '../../utils/auth.js'
 
 const orderItems = ref([])
@@ -455,48 +456,110 @@ function validate() {
   return ''
 }
 
+function buildOrderData() {
+  return {
+    customer_phone: form.customerPhone,
+    receiver_name: form.receiverName,
+    receiver_phone: form.receiverPhone,
+    province: form.province,
+    city: form.city,
+    district: form.district,
+    detail_address: form.detailAddress,
+    delivery_note: form.deliveryNote,
+    items: orderItems.value.map((item) => ({ fruit_id: item.id, quantity: Number(item.quantity) })),
+    coupon_id: selectedCoupon.value?.id || null,
+    reissue_coupon_ids: selectedReissueIds.value.slice(),
+  }
+}
+
+// 券相关错误（已被使用/过期/未达门槛）时重新拉取券列表并重选
+function handleCouponError(err) {
+  if (err.message && err.message.includes('券')) {
+    couponManuallySet.value = false
+    loadCoupons()
+  }
+}
+
+function finishAndLeave(title, content) {
+  if (checkoutFromCart.value) {
+    clearSelectedCartItems(orderItems.value.map((item) => item.id))
+    uni.removeStorageSync('checkout_items')
+  }
+  uni.showModal({
+    title,
+    content,
+    showCancel: false,
+    success: () => uni.switchTab({ url: '/pages/mine/index' }),
+  })
+}
+
+async function submitNewOrder() {
+  // 1) 先创建待支付订单，2) 立即拉起微信支付，3) 支付成功才算下单完成
+  const order = await request({ url: '/orders', method: 'POST', data: buildOrderData() })
+  const pay = await request({ url: `/orders/${order.id}/pay`, method: 'POST' })
+  try {
+    await startPayment(pay)
+  } catch (err) {
+    // 支付取消/失败：订单留在“待支付”，可在订单列表继续支付
+    uni.showModal({
+      title: '尚未完成支付',
+      content: '订单已保留在“待支付”，可在“我的订单”里继续支付。超时未付将自动关闭。',
+      showCancel: false,
+      success: () => uni.switchTab({ url: '/pages/mine/index' }),
+    })
+    return
+  }
+  finishAndLeave('下单成功', '已收到你的付款，供应商会尽快确认库存并安排配送。')
+}
+
+async function submitEditOrder() {
+  // 编辑只增不减：应付上升则返回补差价支付参数，支付成功后变更才生效
+  const result = await request({ url: `/orders/${editingOrderId.value}`, method: 'PATCH', data: buildOrderData() })
+  if (!result.need_payment) {
+    uni.showModal({
+      title: '订单已修改',
+      content: '订单修改已保存，22:30后将不能再修改。',
+      showCancel: false,
+      success: () => uni.switchTab({ url: '/pages/mine/index' }),
+    })
+    return
+  }
+  try {
+    await startPayment(result.pay)
+  } catch (err) {
+    uni.showModal({
+      title: '补差价未完成',
+      content: `本次修改需补差价 ¥${money(result.supplement_amount)}，未支付前修改不生效。可稍后在订单里重新修改并支付。`,
+      showCancel: false,
+      success: () => uni.switchTab({ url: '/pages/mine/index' }),
+    })
+    return
+  }
+  uni.showModal({
+    title: '修改已生效',
+    content: '补差价已支付，订单已更新。',
+    showCancel: false,
+    success: () => uni.switchTab({ url: '/pages/mine/index' }),
+  })
+}
+
 async function submitOrder() {
   const message = validate()
   if (message) {
     uni.showToast({ title: message, icon: 'none' })
     return
   }
+  if (!(await ensureCustomerLogin())) return
   submitting.value = true
   try {
-    await request({
-      url: isEditMode.value ? `/orders/${editingOrderId.value}` : '/orders',
-      method: isEditMode.value ? 'PATCH' : 'POST',
-      data: {
-        customer_phone: form.customerPhone,
-        receiver_name: form.receiverName,
-        receiver_phone: form.receiverPhone,
-        province: form.province,
-        city: form.city,
-        district: form.district,
-        detail_address: form.detailAddress,
-        delivery_note: form.deliveryNote,
-        items: orderItems.value.map((item) => ({ fruit_id: item.id, quantity: Number(item.quantity) })),
-        coupon_id: selectedCoupon.value?.id || null,
-        reissue_coupon_ids: selectedReissueIds.value.slice(),
-      },
-    })
-    if (checkoutFromCart.value) {
-      clearSelectedCartItems(orderItems.value.map((item) => item.id))
-      uni.removeStorageSync('checkout_items')
+    if (isEditMode.value) {
+      await submitEditOrder()
+    } else {
+      await submitNewOrder()
     }
-    uni.showModal({
-      title: isEditMode.value ? '订单已修改' : '预订已提交',
-      content: isEditMode.value ? '订单修改已保存，22:30后将不能再修改。' : '供应商会尽快联系你确认库存、价格和配送，无需线上支付。',
-      showCancel: false,
-      success: () => uni.switchTab({ url: '/pages/mine/index' }),
-    })
   } catch (err) {
     uni.showToast({ title: err.message, icon: 'none' })
-    // 券相关错误（已被使用/过期/未达门槛）时重新拉取券列表并重选
-    if (err.message && err.message.includes('券')) {
-      couponManuallySet.value = false
-      loadCoupons()
-    }
+    handleCouponError(err)
   } finally {
     submitting.value = false
   }
@@ -748,7 +811,7 @@ onPullDownRefresh(async () => {
         <view v-if="deliveryFee > 0" class="bottom-fee">含配送费 ¥{{ money(deliveryFee) }}</view>
         <view v-if="couponDiscountValue > 0" class="bottom-saved">已优惠 ¥{{ money(couponDiscountValue) }}</view>
       </view>
-      <button class="submit" :loading="submitting" :disabled="submitting || loading || (isEditMode && !editAllowed)" @tap="submitOrder">{{ isEditMode ? (editAllowed ? '保存修改' : '已截止修改') : '提交预订' }}</button>
+      <button class="submit" :loading="submitting" :disabled="submitting || loading || (isEditMode && !editAllowed)" @tap="submitOrder">{{ isEditMode ? (editAllowed ? '保存修改' : '已截止修改') : '结算' }}</button>
     </view>
   </view>
 </template>

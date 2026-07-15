@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from app.models import CouponTemplate, Customer, CustomerCoupon
+from app.models import CouponTemplate, Customer, CustomerCoupon, Order
 
 
 def _build_customer_coupon(customer: Customer, template: CouponTemplate, source: str, now: datetime) -> CustomerCoupon:
@@ -106,3 +106,30 @@ def attach_reissue_coupons(db: Session, orders: 'list[Order]') -> None:
         grouped.setdefault(coupon.order_id, []).append(coupon)
     for order in orders:
         order.reissue_coupons = grouped.get(order.id, [])
+
+
+def release_order_coupons(db: Session, order: Order) -> None:
+    """订单关闭/取消时，释放其占用且未过期的券（满减券 + 补送券），回到未使用状态。
+
+    满减券经 Order.coupon_id 关联；补送券经 CustomerCoupon.order_id 反查，可能多张。
+    仅回滚未过期的券——过期券放回也无用，保持 used 更符合直觉。
+    供超时关单、用户取消、后台取消三处共用。
+    """
+    now = datetime.now()
+
+    def _reset(coupon: CustomerCoupon | None) -> None:
+        if coupon and coupon.status == 'used' and coupon.expires_at >= now:
+            coupon.status = 'unused'
+            coupon.used_at = None
+            coupon.order_id = None
+
+    if order.coupon_id:
+        _reset(db.query(CustomerCoupon).filter(CustomerCoupon.id == order.coupon_id).first())
+
+    reissue_coupons = (
+        db.query(CustomerCoupon)
+        .filter(CustomerCoupon.order_id == order.id, CustomerCoupon.kind == 'reissue')
+        .all()
+    )
+    for coupon in reissue_coupons:
+        _reset(coupon)

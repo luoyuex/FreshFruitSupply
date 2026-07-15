@@ -159,7 +159,9 @@ class Order(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     order_no: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     customer_id: Mapped[int] = mapped_column(ForeignKey('customers.id'), index=True)
-    status: Mapped[str] = mapped_column(String(32), default='pending', index=True)
+    # unpaid=待支付（下单初始态）; pending=已付款待确认; confirmed/delivering/completed 同前;
+    # closed=超时未付自动关闭（无需退款）; cancelled=已付款后取消（已原路退款）
+    status: Mapped[str] = mapped_column(String(32), default='unpaid', index=True)
     estimated_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
     receiver_name: Mapped[str] = mapped_column(String(60))
     receiver_phone: Mapped[str] = mapped_column(String(32))
@@ -173,12 +175,17 @@ class Order(TimestampMixin, Base):
     discount_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
     delivery_fee: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
     payable_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
+    # 已成功支付累计（首付 + 补差价）；与 payable_total 的差额即当前待补款金额
+    paid_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
 
     customer: Mapped[Customer] = relationship(back_populates='orders')
     items: Mapped[list['OrderItem']] = relationship(back_populates='order', cascade='all, delete-orphan')
+    payments: Mapped[list['OrderPayment']] = relationship(back_populates='order', cascade='all, delete-orphan')
 
     @property
     def can_edit(self) -> bool:
+        # 已付款待确认/已确认的订单可在 22:30 前编辑（编辑只增不减，加量走补差价）。
+        # 待支付订单不走编辑入口，应先完成支付。
         now = datetime.now(CHINA_TZ).time()
         return self.status in {'pending', 'confirmed'} and now < time(22, 30)
 
@@ -203,6 +210,32 @@ class OrderItem(Base):
     def image_url(self) -> str | None:
         # 订单项本身不存图，封面取自关联水果，便于订单页展示真实缩略图
         return self.fruit.image_url if self.fruit else None
+
+
+class OrderPayment(TimestampMixin, Base):
+    """订单支付流水：一个订单可有多笔（首付 initial + 若干补差价 supplement）。
+
+    每笔对应一次微信支付，out_trade_no 全局唯一作为商户订单号。
+    status: pending（已下单待支付）/success（支付成功）/refunded（已退款）。
+    """
+
+    __tablename__ = 'order_payments'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey('orders.id'), index=True)
+    out_trade_no: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    kind: Mapped[str] = mapped_column(String(16), default='initial', index=True)  # initial/supplement
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    status: Mapped[str] = mapped_column(String(16), default='pending', index=True)  # pending/success/refunded/cancelled（cancelled=作废未支付的补差价流水）
+    prepay_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    transaction_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    refund_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 补差价流水暂存变更后的订单明细快照（JSON），支付成功回调后才落库到订单
+    pending_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    refunded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    order: Mapped[Order] = relationship(back_populates='payments')
 
 
 class Admin(TimestampMixin, Base):

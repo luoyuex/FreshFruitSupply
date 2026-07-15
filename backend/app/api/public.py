@@ -2,19 +2,21 @@ import json
 from datetime import datetime, time
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import get_current_customer, get_optional_auth_customer
 from app.db.session import get_db
-from app.models import Announcement, Customer, CustomerAddress, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, OrderItem
+from app.models import Announcement, Customer, CustomerAddress, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, OrderItem, OrderPayment
 from app.models.domain import CHINA_TZ
-from app.schemas import AnnouncementFeedOut, AnnouncementOut, AnnouncementReadOut, CustomerAddressOut, CustomerAddressUpsert, CustomerCouponOut, CustomerOut, CustomerProfileUpdate, DeliveryConfigOut, FruitCategoryOut, FruitOut, OrderCreate, OrderOut, VerificationOut
-from app.services.coupon import attach_reissue_coupons, compute_discount, effective_coupon_status, grant_coupons_on_verified
+from app.schemas import AnnouncementFeedOut, AnnouncementOut, AnnouncementReadOut, CustomerAddressOut, CustomerAddressUpsert, CustomerCouponOut, CustomerOut, CustomerProfileUpdate, DeliveryConfigOut, FruitCategoryOut, FruitOut, MockPaySuccessIn, OrderCreate, OrderEditResult, OrderOut, PaymentParams, PayResponse, VerificationOut
+from app.services.coupon import attach_reissue_coupons, compute_discount, effective_coupon_status, grant_coupons_on_verified, release_order_coupons
 from app.services.customer import get_or_create_customer
 from app.services.settings import compute_delivery_fee, get_delivery_config
 from app.services.email import send_order_email
 from app.services.upload import save_upload, to_public_urls
+from app.services.wechatpay import create_jsapi_payment, generate_out_trade_no, is_mock, verify_and_parse_notify
+from app.services.order_maintenance import cancel_order
 
 router = APIRouter()
 ORDER_EDIT_CUTOFF = time(22, 30)
@@ -189,6 +191,50 @@ def _apply_reissue_coupons(order: Order, customer: Customer, coupon_ids: list[in
 
 def _order_no() -> str:
     return datetime.now().strftime('F%Y%m%d%H%M%S%f')[:-3]
+
+
+def _assert_add_only(order: Order, payload: OrderCreate) -> None:
+    """已付款订单编辑只允许加商品/加量，不允许减量或删除（付款后减量会导致金额对不上）。
+
+    校验新明细为原明细的超集：原有每个商品仍在，且数量 >= 原数量。
+    """
+    old_quantities: dict[int, Decimal] = {}
+    for item in order.items:
+        old_quantities[item.fruit_id] = old_quantities.get(item.fruit_id, Decimal('0')) + Decimal(item.quantity)
+    new_quantities: dict[int, Decimal] = {}
+    for line in payload.items:
+        new_quantities[line.fruit_id] = new_quantities.get(line.fruit_id, Decimal('0')) + Decimal(line.quantity)
+    for fruit_id, old_qty in old_quantities.items():
+        new_qty = new_quantities.get(fruit_id, Decimal('0'))
+        if new_qty < old_qty:
+            raise HTTPException(status_code=400, detail='已付款订单只能增加商品或数量，不能减少或删除')
+
+
+def _preview_payable(order: Order, customer: Customer, payload: OrderCreate, db: Session) -> Decimal:
+    """按变更后的明细预算应付金额，但不改动订单本身（用于判断是否需要补差价）。
+
+    口径与 _apply_order_payload 一致：商品原价合计 - 券抵扣，再加配送费。
+    编辑只增不减，原订单占用的满减券仍沿用（门槛只会更容易满足）。
+    """
+    estimated_total = Decimal('0')
+    for line in payload.items:
+        fruit = db.query(Fruit).options(joinedload(Fruit.quote)).filter(Fruit.id == line.fruit_id).first()
+        if not fruit or not fruit.quote:
+            raise HTTPException(status_code=404, detail=f'Fruit {line.fruit_id} not found')
+        if fruit.stock_status == 'out_of_stock':
+            raise HTTPException(status_code=400, detail=f'{fruit.name} is out of stock')
+        price = fruit.quote.verified_price if customer.verification_status == 'verified' else fruit.quote.normal_price
+        estimated_total += price * line.quantity
+
+    discount = Decimal('0')
+    if payload.coupon_id:
+        coupon = db.query(CustomerCoupon).filter(CustomerCoupon.id == payload.coupon_id, CustomerCoupon.customer_id == customer.id).first()
+        if coupon and coupon.kind == 'discount':
+            discount = compute_discount(coupon, estimated_total)
+    threshold, fee = get_delivery_config(db)
+    delivery_fee = compute_delivery_fee(estimated_total, threshold, fee)
+    payable = estimated_total - discount
+    return (payable if payable > 0 else Decimal('0')) + delivery_fee
 
 
 def _verification_payload(verification: CustomerVerification) -> dict:
@@ -521,17 +567,65 @@ async def submit_verification(
     return _verification_payload(verification)
 
 
+async def _notify_order_paid(db: Session, order: Order) -> None:
+    """订单付满后通知供应商配货。挂载补送券后发邮件，回写通知状态。
+
+    邮件由「下单即发」移到「支付成功后发」——只有付过款的订单才需要供应商配货。
+    """
+    # 先挂载补送券，订单邮件才能带上补送商品明细供配货
+    attach_reissue_coupons(db, [order])
+    try:
+        await send_order_email(order)
+        order.email_notify_status = 'sent'
+    except Exception:
+        order.email_notify_status = 'failed'
+    db.commit()
+    db.refresh(order)
+    attach_reissue_coupons(db, [order])
+
+
+def _new_payment(order: Order, amount: Decimal, kind: str, pending_payload: str | None = None) -> OrderPayment:
+    """新建一笔待支付流水（首付/补差价），商户订单号全局唯一。"""
+    return OrderPayment(
+        order_id=order.id,
+        out_trade_no=generate_out_trade_no(),
+        kind=kind,
+        amount=amount,
+        status='pending',
+        pending_payload=pending_payload,
+    )
+
+
+def _reusable_pending_payment(db: Session, order: Order, kind: str) -> OrderPayment | None:
+    """取该订单同类型仍待支付的流水，避免重复下单时产生多条 pending 流水。"""
+    return (
+        db.query(OrderPayment)
+        .filter(
+            OrderPayment.order_id == order.id,
+            OrderPayment.kind == kind,
+            OrderPayment.status == 'pending',
+        )
+        .order_by(OrderPayment.id.desc())
+        .first()
+    )
+
+
 @router.post('/orders', response_model=OrderOut, status_code=status.HTTP_201_CREATED)
-async def create_order(
+def create_order(
     payload: OrderCreate,
     db: Session = Depends(get_db),
     auth_customer: Customer | None = Depends(get_optional_auth_customer),
 ):
+    """创建待支付订单。此时不发邮件——需支付成功后才通知供应商配货。
+
+    下单即锁定优惠券占位；若超时未支付，关单时会释放。前端拿到订单后立即调
+    POST /orders/{id}/pay 拉起微信支付。
+    """
     customer = auth_customer or get_or_create_customer(db, phone=payload.customer_phone, wechat_openid=payload.wechat_openid)
     order = Order(
         order_no=_order_no(),
         customer_id=customer.id,
-        status='pending',
+        status='unpaid',
         receiver_name=payload.receiver_name,
         receiver_phone=payload.receiver_phone,
         province=payload.province,
@@ -544,14 +638,165 @@ async def create_order(
     db.add(order)
     db.commit()
     db.refresh(order)
-    # 先挂载补送券，订单邮件才能带上补送商品明细供配货
     attach_reissue_coupons(db, [order])
+    return order
 
+
+@router.post('/orders/{order_id}/pay', response_model=PayResponse)
+def pay_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    auth_customer: Customer | None = Depends(get_optional_auth_customer),
+):
+    """为待支付订单发起（或复用）首付支付，返回小程序拉起支付所需参数。"""
+    customer = _current_customer_or_401(auth_customer)
+    order = (
+        db.query(Order)
+        .filter(Order.id == order_id, Order.customer_id == customer.id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail='Order not found')
+    if order.status != 'unpaid':
+        raise HTTPException(status_code=400, detail='订单无需支付或已支付')
+
+    amount = order.payable_total
+    if amount is None or amount <= 0:
+        raise HTTPException(status_code=400, detail='订单金额异常，无法支付')
+
+    payment = _reusable_pending_payment(db, order, 'initial')
+    if payment is None:
+        payment = _new_payment(order, amount, 'initial')
+        db.add(payment)
+        db.flush()
+    elif payment.amount != amount:
+        # 复用旧流水前对齐金额（极少见：编辑改动了应付但流水已生成）
+        payment.amount = amount
+
+    pay_params = create_jsapi_payment(payment, customer.wechat_openid or '')
+    db.commit()
+    return PayResponse(
+        order_id=order.id,
+        out_trade_no=payment.out_trade_no,
+        amount=payment.amount,
+        pay_params=PaymentParams(out_trade_no=payment.out_trade_no, **pay_params) if 'out_trade_no' not in pay_params else PaymentParams(**pay_params),
+    )
+
+
+async def _settle_successful_payment(db: Session, payment: OrderPayment, transaction_id: str | None) -> None:
+    """支付成功后的统一结算：幂等标记流水、累加已付、推进订单状态并通知。
+
+    首付付满 → 订单从 unpaid 转 pending 并发配货邮件；
+    补差价付满 → 落库暂存的明细变更（加商品/加量），刷新应付并重发配货邮件。
+    """
+    if payment.status == 'success':
+        return  # 幂等：重复回调直接忽略
+    payment.status = 'success'
+    payment.transaction_id = transaction_id
+    payment.paid_at = datetime.now()
+
+    order = (
+        db.query(Order)
+        .options(joinedload(Order.items).joinedload(OrderItem.fruit))
+        .filter(Order.id == payment.order_id)
+        .first()
+    )
+    if not order:
+        db.commit()
+        return
+    order.paid_amount = (order.paid_amount or Decimal('0')) + payment.amount
+
+    # 首付付满：订单成立，转待确认并通知供应商
+    if payment.kind == 'initial' and order.status == 'unpaid' and order.paid_amount >= order.payable_total:
+        order.status = 'pending'
+        db.commit()
+        db.refresh(order)
+        await _notify_order_paid(db, order)
+        return
+
+    # 补差价付满：把编辑时暂存的明细变更落库，刷新应付后重发配货邮件
+    if payment.kind == 'supplement' and payment.pending_payload:
+        customer = db.query(Customer).filter(Customer.id == order.customer_id).first()
+        stored = OrderCreate(**json.loads(payment.pending_payload))
+        _apply_order_payload(order, customer, stored, db)
+        # 落库后清空暂存，避免重复应用
+        payment.pending_payload = None
+        db.commit()
+        db.refresh(order)
+        await _notify_order_paid(db, order)
+        return
+
+    db.commit()
+
+
+@router.post('/payments/wechat/notify')
+async def wechat_pay_notify(request: Request, db: Session = Depends(get_db)):
+    """微信支付结果回调：验签解密 → 定位流水 → 结算。返回微信要求的应答格式。"""
+    body = await request.body()
     try:
-        await send_order_email(order)
-        order.email_notify_status = 'sent'
+        result = verify_and_parse_notify(dict(request.headers), body)
     except Exception:
-        order.email_notify_status = 'failed'
+        # 验签/解密失败，让微信重试
+        return {'code': 'FAIL', 'message': '验签失败'}
+
+    out_trade_no = result.get('out_trade_no')
+    trade_state = result.get('trade_state')
+    transaction_id = result.get('transaction_id')
+    if not out_trade_no:
+        return {'code': 'FAIL', 'message': '缺少订单号'}
+    payment = db.query(OrderPayment).filter(OrderPayment.out_trade_no == out_trade_no).first()
+    if not payment:
+        return {'code': 'FAIL', 'message': '流水不存在'}
+    if trade_state == 'SUCCESS':
+        await _settle_successful_payment(db, payment, transaction_id)
+    return {'code': 'SUCCESS', 'message': '成功'}
+
+
+@router.post('/payments/dev/mock-success', response_model=OrderOut)
+async def mock_pay_success(
+    payload: MockPaySuccessIn,
+    db: Session = Depends(get_db),
+    auth_customer: Customer | None = Depends(get_optional_auth_customer),
+):
+    """仅 Mock 模式：模拟一笔支付成功，驱动与真实回调一致的结算逻辑，便于凭证到位前联调。"""
+    if not is_mock():
+        raise HTTPException(status_code=403, detail='Mock payment is disabled')
+    customer = _current_customer_or_401(auth_customer)
+    payment = db.query(OrderPayment).filter(OrderPayment.out_trade_no == payload.out_trade_no).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail='Payment not found')
+    order = db.query(Order).filter(Order.id == payment.order_id, Order.customer_id == customer.id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail='Order not found')
+    await _settle_successful_payment(db, payment, f'mock_txn_{payment.out_trade_no}')
+    db.refresh(order)
+    attach_reissue_coupons(db, [order])
+    return order
+
+
+@router.post('/orders/{order_id}/cancel', response_model=OrderOut)
+def cancel_my_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    auth_customer: Customer | None = Depends(get_optional_auth_customer),
+):
+    """用户取消自己的订单。
+
+    已付款订单原路退款并置 cancelled；待支付订单直接关闭。已在配送中/已完成的订单
+    不允许自助取消。取消后释放占用的优惠券。
+    """
+    customer = _current_customer_or_401(auth_customer)
+    order = (
+        db.query(Order)
+        .options(joinedload(Order.items).joinedload(OrderItem.fruit))
+        .filter(Order.id == order_id, Order.customer_id == customer.id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail='Order not found')
+    if order.status not in {'unpaid', 'pending', 'confirmed'}:
+        raise HTTPException(status_code=400, detail='当前订单状态不可取消')
+    cancel_order(db, order)
     db.commit()
     db.refresh(order)
     attach_reissue_coupons(db, [order])
@@ -578,13 +823,19 @@ def get_order(
     return order
 
 
-@router.patch('/orders/{order_id}', response_model=OrderOut)
+@router.patch('/orders/{order_id}', response_model=OrderEditResult)
 def update_order(
     order_id: int,
     payload: OrderCreate,
     db: Session = Depends(get_db),
     auth_customer: Customer | None = Depends(get_optional_auth_customer),
 ):
+    """编辑已付款订单：只能加商品/加量，不能减。
+
+    加量导致应付上升时，不立即改订单，而是把变更暂存进一笔 supplement 待支付流水，
+    返回补差价的拉起支付参数；支付成功回调后暂存的变更才落库（暂存式，财务最严谨）。
+    应付未上升（如仅改配送备注/收货信息）时，变更直接落库、无需补款。
+    """
     if not auth_customer:
         raise HTTPException(status_code=401, detail='Missing customer login')
     order = (
@@ -596,11 +847,38 @@ def update_order(
     if not order:
         raise HTTPException(status_code=404, detail='Order not found')
     _assert_order_editable(order)
-    _apply_order_payload(order, auth_customer, payload, db)
+    _assert_add_only(order, payload)
+
+    new_payable = _preview_payable(order, auth_customer, payload, db)
+    supplement = new_payable - (order.paid_amount or Decimal('0'))
+
+    # 不需补款：变更直接落库（收货信息/备注变化，或加了免费补送券但应付未上升）
+    if supplement <= 0:
+        _apply_order_payload(order, auth_customer, payload, db)
+        db.commit()
+        db.refresh(order)
+        attach_reissue_coupons(db, [order])
+        return OrderEditResult(need_payment=False, supplement_amount=Decimal('0'), order=OrderOut.model_validate(order))
+
+    # 需补款：把变更暂存到补差价流水，支付成功回调后才落库；订单本身此刻不变
+    existing = _reusable_pending_payment(db, order, 'supplement')
+    if existing is not None:
+        existing.status = 'cancelled'  # 作废上一笔未支付的补差价流水，避免多条 pending 叠加
+    pending_payload = payload.model_dump_json()
+    payment = _new_payment(order, supplement, 'supplement', pending_payload=pending_payload)
+    db.add(payment)
+    db.flush()
+    pay_params = create_jsapi_payment(payment, auth_customer.wechat_openid or '')
     db.commit()
     db.refresh(order)
     attach_reissue_coupons(db, [order])
-    return order
+    pay = PayResponse(
+        order_id=order.id,
+        out_trade_no=payment.out_trade_no,
+        amount=payment.amount,
+        pay_params=PaymentParams(**({'out_trade_no': payment.out_trade_no, **pay_params} if 'out_trade_no' not in pay_params else pay_params)),
+    )
+    return OrderEditResult(need_payment=True, supplement_amount=supplement, order=OrderOut.model_validate(order), pay=pay)
 
 
 @router.get('/orders/my', response_model=list[OrderOut])

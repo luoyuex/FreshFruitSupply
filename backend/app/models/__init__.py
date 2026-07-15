@@ -1,4 +1,4 @@
-from app.models.domain import Admin, Announcement, CouponTemplate, Customer, CustomerAddress, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, OrderItem, PriceQuote, SystemSetting
+from app.models.domain import Admin, Announcement, CouponTemplate, Customer, CustomerAddress, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, OrderItem, OrderPayment, PriceQuote, SystemSetting
 
 __all__ = [
     'Admin',
@@ -12,6 +12,7 @@ __all__ = [
     'FruitCategory',
     'Order',
     'OrderItem',
+    'OrderPayment',
     'PriceQuote',
     'SystemSetting',
 ]

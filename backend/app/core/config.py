@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     order_notify_email: str = ''
     wechat_appid: str = ''
     wechat_secret: str = ''
+    # 微信支付（小程序 JSAPI）商户配置；未配齐时配合 wechat_pay_mock 走模拟支付
+    wechat_mchid: str = ''
+    wechat_pay_api_v3_key: str = ''
+    wechat_pay_cert_serial: str = ''
+    wechat_pay_private_key_path: str = ''
+    wechat_pay_notify_url: str = ''
+    # Mock 模式：不调用真实微信支付 API，用开发接口模拟支付成功，便于凭证到位前联调
+    wechat_pay_mock: bool = True
+    # 待支付订单超时自动关闭时长（分钟）
+    order_unpaid_timeout_minutes: int = 15
 
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
 

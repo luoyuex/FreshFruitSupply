@@ -14,6 +14,7 @@ from app.db.session import get_db
 from app.models import Admin, Announcement, CouponTemplate, Customer, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, PriceQuote
 from app.schemas import AdminAuthOut, AdminEntryVisibleOut, AdminLogin, AdminOut, AdminPasswordUpdate, AdminUpsert, AnnouncementOut, AnnouncementUpsert, CouponGrantIn, CouponTemplateOut, CouponTemplateUpsert, CustomerAdminOut, CustomerCouponOut, DeliveryConfigOut, DeliveryConfigUpdate, FruitCategoryOut, FruitCategoryUpsert, FruitOut, FruitUpsert, OrderBulkStatusUpdate, OrderOut, OrderStatusUpdate, SalesStatsOut, VerificationReview
 from app.services.coupon import attach_reissue_coupons, effective_coupon_status, grant_coupon_to_customer, grant_coupons_on_verified
+from app.services.order_maintenance import cancel_order
 from app.services.settings import DELIVERY_FEE_KEY, DELIVERY_FREE_THRESHOLD_KEY, get_delivery_config, set_setting
 from app.services.upload import save_upload, to_public_url, to_public_urls, to_storage_path, to_storage_paths
 
@@ -22,32 +23,6 @@ router = APIRouter(prefix='/admin')
 
 def _admin_payload(admin: Admin) -> AdminOut:
     return AdminOut.model_validate(admin)
-
-
-def _release_order_coupon(db: Session, order: Order) -> None:
-    """订单取消时，释放其占用且未过期的券（满减券 + 补送券），回到未使用状态。
-
-    满减券经 Order.coupon_id 关联；补送券经 CustomerCoupon.order_id 反查，可能多张。
-    仅回滚未过期的券——过期券放回也无用，保持 used 更符合直觉。
-    """
-    now = datetime.now()
-
-    def _reset(coupon: CustomerCoupon | None) -> None:
-        if coupon and coupon.status == 'used' and coupon.expires_at >= now:
-            coupon.status = 'unused'
-            coupon.used_at = None
-            coupon.order_id = None
-
-    if order.coupon_id:
-        _reset(db.query(CustomerCoupon).filter(CustomerCoupon.id == order.coupon_id).first())
-
-    reissue_coupons = (
-        db.query(CustomerCoupon)
-        .filter(CustomerCoupon.order_id == order.id, CustomerCoupon.kind == 'reissue')
-        .all()
-    )
-    for coupon in reissue_coupons:
-        _reset(coupon)
 
 
 def _assert_not_last_super_admin(db: Session, admin: Admin, next_role: str | None = None, next_active: bool | None = None) -> None:
@@ -290,9 +265,11 @@ def bulk_update_order_status(
     if missing_ids:
         raise HTTPException(status_code=404, detail=f'Orders not found: {missing_ids}')
     for order in orders:
-        if payload.status == 'cancelled' and order.status != 'cancelled':
-            _release_order_coupon(db, order)
-        order.status = payload.status
+        if payload.status == 'cancelled' and order.status not in ('cancelled', 'closed'):
+            # 取消时由 cancel_order 决定终态：已付款→退款并置 cancelled，未付款→置 closed
+            cancel_order(db, order)
+        else:
+            order.status = payload.status
     db.commit()
     for order in orders:
         db.refresh(order)
@@ -311,8 +288,10 @@ def update_order_status(
     if not order:
         raise HTTPException(status_code=404, detail='Order not found')
     if payload.status == 'cancelled' and order.status != 'cancelled':
-        _release_order_coupon(db, order)
-    order.status = payload.status
+        # 取消已付款订单会原路退款；未付款订单直接关闭。cancel_order 内部据 paid_amount 决定终态。
+        cancel_order(db, order)
+    else:
+        order.status = payload.status
     db.commit()
     db.refresh(order)
     attach_reissue_coupons(db, [order])
