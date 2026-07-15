@@ -89,6 +89,12 @@ function chooseAvatar() {
       const tempFilePath = res.tempFilePaths[0]
       await uploadAvatarFunc(tempFilePath)
     },
+    fail: (err) => {
+      console.error('[chooseAvatar] chooseImage fail:', JSON.stringify(err), err)
+      const msg = err?.errMsg || ''
+      if (msg.includes('cancel')) return
+      uni.showToast({ title: msg || '选择图片失败', icon: 'none' })
+    },
   })
 }
 

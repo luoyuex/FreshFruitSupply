@@ -119,6 +119,12 @@ function chooseImage() {
     success: (res) => {
       imagePath.value = res.tempFilePaths[0]
     },
+    fail: (err) => {
+      console.error('[verify] chooseImage fail:', JSON.stringify(err), err)
+      const msg = err?.errMsg || ''
+      if (msg.includes('cancel')) return
+      uni.showToast({ title: msg || '选择图片失败', icon: 'none' })
+    },
   })
 }
 

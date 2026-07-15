@@ -28,6 +28,8 @@ Start the API:
 
 ```bash
 uvicorn app.main:app --reload
+or
+uvicorn app.main:app --host 0.0.0.0 --reload
 ```
 
 API docs are available at `http://127.0.0.1:8000/docs`.
