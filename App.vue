@@ -52,4 +52,8 @@ textarea {
     background-position: -200% 0;
   }
 }
+
+.bottom-bar {
+	z-index: 99;
+}
 </style>

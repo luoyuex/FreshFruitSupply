@@ -73,7 +73,7 @@ function addToCart() {
   if (!fruit.value) return
   addCartItem(fruit.value, quantity.value)
   cartTotal.value = cartCount()
-  uni.showToast({ title: '已加入预订车', icon: 'success' })
+  uni.showToast({ title: '已加入购物车', icon: 'success' })
 }
 
 function reserveNow() {
@@ -118,7 +118,7 @@ onPullDownRefresh(async () => {
 
 function onShareAppMessage() {
   return {
-    title: fruit.value ? `${fruit.value.name} - 珍果链` : '珍果链 - 优质水果批发预订',
+    title: fruit.value ? `${fruit.value.name} - 珍果链` : '珍果链 - 优质水果批发',
     path: `/pages/product/detail?id=${fruitId.value}`,
     imageUrl: coverUrl.value || ''
   }
@@ -126,7 +126,7 @@ function onShareAppMessage() {
 
 function onShareTimeline() {
   return {
-    title: fruit.value ? `${fruit.value.name} - 珍果链 - 优质水果批发预订` : '珍果链 - 优质水果批发预订',
+    title: fruit.value ? `${fruit.value.name} - 珍果链 - 优质水果批发` : '珍果链 - 优质水果批发',
     query: `id=${fruitId.value}`,
     imageUrl: coverUrl.value || ''
   }
@@ -167,15 +167,15 @@ defineExpose({
         </view>
       </view>
       <view class="auth-tip" @tap="goVerify">
-        {{ isVerified ? '你已是认证客户，本单按认证价预估' : '认证店铺后可按认证价预订，点击去认证 ›' }}
+        {{ isVerified ? '你已是认证客户，本单按认证价预估' : '认证店铺后可按认证价购买，点击去认证 ›' }}
       </view>
     </view>
 
     <view class="detail-card">
       <view class="section-title">商品说明</view>
       <view class="detail-line">起订量：{{ fruit?.quote?.min_order_quantity || 1 }}{{ fruit?.unit || '' }}</view>
-      <view class="detail-line">价格说明：行情波动较快，提交预订后由供应商最终确认。</view>
-      <view class="detail-line">商品备注：{{ fruit?.quote?.note || '支持批发预订，具体配送时间请联系供应商确认。' }}</view>
+      <view class="detail-line">价格说明：行情波动较快，下单支付后由供应商最终确认。</view>
+      <view class="detail-line">商品备注：{{ fruit?.quote?.note || '支持批发，具体配送时间请联系供应商确认。' }}</view>
     </view>
 
     <view v-if="detailImageUrls.length" class="image-detail-card">
@@ -193,7 +193,7 @@ defineExpose({
 
     <view class="quantity-card">
       <view>
-        <view class="section-title">预订数量</view>
+        <view class="section-title">购买数量</view>
         <view class="detail-line">预估合计 <text class="total">¥{{ money(estimatedTotal) }}</text></view>
       </view>
       <view class="stepper">
@@ -210,7 +210,7 @@ defineExpose({
         <text class="cart-text">购物车</text>
       </view>
       <button class="cart-button" @tap="addToCart">加入购物车</button>
-      <button class="reserve-button" @tap="reserveNow">立即预订</button>
+      <button class="reserve-button" @tap="reserveNow">立即购买</button>
     </view>
   </view>
 </template>

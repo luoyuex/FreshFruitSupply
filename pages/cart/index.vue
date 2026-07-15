@@ -95,7 +95,7 @@ function changeQuantity(item, delta) {
 function deleteItem(item) {
   uni.showModal({
     title: '移除商品',
-    content: `确认从预订车移除 ${item.name}？`,
+    content: `确认从购物车移除 ${item.name}？`,
     success: (res) => {
       if (res.confirm) {
         items.value = removeCartItem(item.id)
@@ -116,7 +116,7 @@ function deleteSelected() {
   }
   uni.showModal({
     title: '移除商品',
-    content: `确认从预订车移除选中的 ${selectedItems.value.length} 件商品？`,
+    content: `确认从购物车移除选中的 ${selectedItems.value.length} 件商品？`,
     success: (res) => {
       if (!res.confirm) return
       selectedItems.value.forEach((item) => removeCartItem(item.id))
@@ -189,7 +189,7 @@ defineExpose({
 
     <view v-if="items.length === 0" class="empty">
       <view class="empty-icon">🛒</view>
-      <view class="empty-title">预订车还是空的</view>
+      <view class="empty-title">购物车还是空的</view>
       <button class="go" @tap="goCategory">去选水果</button>
     </view>
 
@@ -230,7 +230,7 @@ defineExpose({
       <view v-else class="settle-area">
         <text class="sum-label">合计</text>
         <text class="sum-price">¥{{ money(total) }}</text>
-        <button class="settle" :class="{ active: selectedItems.length }" @tap="checkout">去预订</button>
+        <button class="settle" :class="{ active: selectedItems.length }" @tap="checkout">去结算</button>
       </view>
     </view>
   </view>

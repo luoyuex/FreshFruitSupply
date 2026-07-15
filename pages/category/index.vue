@@ -141,7 +141,7 @@ function goDetail(fruit) {
 function addToCart(fruit) {
   addCartItem(fruit, Number(fruit.quote?.min_order_quantity || 1))
   cartTotal.value = cartCount()
-  uni.showToast({ title: '已加入预订车', icon: 'success' })
+  uni.showToast({ title: '已加入购物车', icon: 'success' })
 }
 
 onMounted(() => {

@@ -83,7 +83,7 @@ function goDetail(fruit) {
 function addToCart(fruit) {
   addCartItem(fruit, Number(fruit.quote?.min_order_quantity || 1))
   cartTotal.value = cartCount()
-  uni.showToast({ title: '已加入预订车', icon: 'success' })
+  uni.showToast({ title: '已加入购物车', icon: 'success' })
 }
 
 function goCategory() {
@@ -112,7 +112,7 @@ onPullDownRefresh(async () => {
 
 function onShareAppMessage() {
   return {
-    title: '珍果链 - 优质水果批发预订',
+    title: '珍果链 - 优质水果批发',
     path: '/pages/index/index',
     imageUrl: ''
   }
@@ -120,7 +120,7 @@ function onShareAppMessage() {
 
 function onShareTimeline() {
   return {
-    title: '珍果链 - 优质水果批发预订',
+    title: '珍果链 - 优质水果批发',
     query: '',
     imageUrl: ''
   }

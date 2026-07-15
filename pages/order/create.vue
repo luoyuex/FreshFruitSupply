@@ -609,7 +609,7 @@ onPullDownRefresh(async () => {
 <template>
   <view class="page">
 
-    <view class="tip-strip">{{ isEditMode ? '订单可在每天22:30前修改，之后车辆准备出发。' : '提交后无需线上支付，供应商会电话/微信确认配送。' }}</view>
+    <view class="tip-strip">{{ isEditMode ? '订单可在每天22:30前修改（只能增加商品，加量需补差价）。' : '请核对订单后完成微信支付，支付成功才算下单，超时未付将自动关闭。' }}</view>
 
     <view class="card">
       <view class="card-title-row">
@@ -635,7 +635,7 @@ onPullDownRefresh(async () => {
           <button class="remove-goods" :disabled="isEditMode && !editAllowed" @tap="removeItem(item)">删除</button>
         </view>
       </view>
-      <view class="total">预估合计 <text>¥{{ money(estimatedTotal) }}</text></view>
+      <view class="total">商品合计 <text>¥{{ money(estimatedTotal) }}</text></view>
     </view>
 
     <view class="coupon-row" @tap="openCouponPicker">
@@ -819,7 +819,8 @@ onPullDownRefresh(async () => {
 <style scoped>
 .page {
   min-height: 100vh;
-  padding-bottom: 138rpx;
+  /* 底部结算栏 fixed（高 112rpx）+ 安全区，预留足够 padding 避免遮住配送信息卡片 */
+  padding-bottom: calc(160rpx + env(safe-area-inset-bottom));
   background: #f3f3f3;
 }
 
