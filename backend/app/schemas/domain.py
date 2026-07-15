@@ -170,6 +170,8 @@ class OrderCreate(BaseModel):
     delivery_note: str | None = None
     items: List[OrderItemCreate]
     coupon_id: int | None = None
+    # 商品补送券可叠加多张，与满减券互不影响，仅作配货标记不参与实付计算
+    reissue_coupon_ids: List[int] = Field(default_factory=list)
 
 
 class OrderItemOut(BaseModel):
@@ -188,6 +190,15 @@ class OrderItemOut(BaseModel):
     @field_serializer('image_url')
     def serialize_image_url(self, value: str | None):
         return to_public_url(value)
+
+
+class ReissueCouponOut(BaseModel):
+    # 订单挂载的商品补送券：配货据 name/description 补配对应商品
+    id: int
+    name: str
+    description: str | None = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class OrderOut(BaseModel):
@@ -211,6 +222,7 @@ class OrderOut(BaseModel):
     can_edit: bool = False
     created_at: datetime
     items: List[OrderItemOut]
+    reissue_coupons: List[ReissueCouponOut] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -227,6 +239,7 @@ class CouponTemplateOut(BaseModel):
     id: int
     name: str
     description: str | None = None
+    kind: str = 'discount'
     discount_type: str
     amount: Decimal
     min_spend: Decimal
@@ -241,7 +254,9 @@ class CouponTemplateOut(BaseModel):
 class CouponTemplateUpsert(BaseModel):
     name: str
     description: str | None = None
-    amount: Decimal = Field(ge=0)
+    # discount=满减券；reissue=商品补送券（无金额/门槛，只手动发，可叠加）
+    kind: Literal['discount', 'reissue'] = 'discount'
+    amount: Decimal = Field(default=0, ge=0)
     min_spend: Decimal = Field(default=0, ge=0)
     valid_days: int = Field(default=30, gt=0)
     grant_on_verified: bool = False
@@ -256,6 +271,8 @@ class CouponGrantIn(BaseModel):
 class CustomerCouponOut(BaseModel):
     id: int
     name: str
+    description: str | None = None
+    kind: str = 'discount'
     amount: Decimal
     min_spend: Decimal
     status: str
@@ -277,6 +294,33 @@ class DeliveryConfigOut(BaseModel):
 class DeliveryConfigUpdate(BaseModel):
     free_threshold: Decimal = Field(ge=0)
     fee: Decimal = Field(ge=0)
+
+
+class AnnouncementOut(BaseModel):
+    id: int
+    title: str
+    content: str
+    is_active: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AnnouncementUpsert(BaseModel):
+    title: str
+    content: str
+    is_active: bool = True
+
+
+class AnnouncementFeedOut(BaseModel):
+    # 公开公告流：启用中的公告 + 当前用户已读位与未读数（游客为 0）
+    items: List[AnnouncementOut]
+    last_read_id: int = 0
+    unread_count: int = 0
+
+
+class AnnouncementReadOut(BaseModel):
+    last_read_id: int
 
 
 class SalesStatsItemOut(BaseModel):

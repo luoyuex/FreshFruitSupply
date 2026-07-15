@@ -2,7 +2,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import hash_password
 from app.db.session import Base, SessionLocal, engine
-from app.models import Admin, CouponTemplate, SystemSetting
+from app.models import Admin, Announcement, CouponTemplate, SystemSetting
 
 
 def seed(db: Session) -> None:
@@ -32,6 +32,29 @@ def seed(db: Session) -> None:
             valid_days=30,
             grant_on_verified=True,
             per_customer_limit=1,
+            is_active=True,
+        ))
+
+    # 默认补送券示例：无金额/门槛，只手动发放，配货据券名/说明补配对应商品
+    if not db.query(CouponTemplate).filter(CouponTemplate.kind == 'reissue').first():
+        db.add(CouponTemplate(
+            name='补送-坏果补配',
+            description='坏果补配，随单免费补送对应商品',
+            kind='reissue',
+            discount_type='amount',
+            amount=0,
+            min_spend=0,
+            valid_days=90,
+            grant_on_verified=False,
+            per_customer_limit=1,
+            is_active=True,
+        ))
+
+    # 首次运行放一条欢迎公告，便于验证公告弹窗/历史/红点效果
+    if not db.query(Announcement).first():
+        db.add(Announcement(
+            title='欢迎使用珍果链',
+            content='价格随行情波动，提交预订后以电话确认为准。祝您采购顺利！',
             is_active=True,
         ))
 

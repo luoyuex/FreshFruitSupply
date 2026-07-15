@@ -8,6 +8,7 @@ import { request } from '../../utils/request.js'
 const items = ref([])
 const verified = shallowRef(false)
 const loading = shallowRef(false)
+const managing = shallowRef(false)
 
 const selectedItems = computed(() => items.value.filter((item) => item.selected))
 const allSelected = computed(() => items.value.length > 0 && selectedItems.value.length === items.value.length)
@@ -17,6 +18,7 @@ const total = computed(() => selectedItems.value.reduce((sum, item) => {
 }, 0))
 
 async function loadCart() {
+  managing.value = false
   items.value = getCartItems()
 
   // 获取最新商品状态
@@ -102,6 +104,28 @@ function deleteItem(item) {
   })
 }
 
+function toggleManage() {
+  managing.value = !managing.value
+}
+
+// 编辑态批量删除已勾选商品
+function deleteSelected() {
+  if (!selectedItems.value.length) {
+    uni.showToast({ title: '请选择商品', icon: 'none' })
+    return
+  }
+  uni.showModal({
+    title: '移除商品',
+    content: `确认从预订车移除选中的 ${selectedItems.value.length} 件商品？`,
+    success: (res) => {
+      if (!res.confirm) return
+      selectedItems.value.forEach((item) => removeCartItem(item.id))
+      items.value = getCartItems()
+      if (!items.value.length) managing.value = false
+    },
+  })
+}
+
 function goVerify() {
   uni.navigateTo({ url: '/pages/verify/index' })
 }
@@ -154,7 +178,8 @@ defineExpose({
     <view class="cart-title-row">
       <view></view>
       <view class="cart-title">购物车({{ items.length }})</view>
-      <view class="manage">管理</view>
+      <view v-if="items.length" class="manage" @tap="toggleManage">{{ managing ? '完成' : '管理' }}</view>
+      <view v-else></view>
     </view>
 
     <view v-if="!verified" class="auth-strip">
@@ -199,7 +224,10 @@ defineExpose({
         <view class="circle" :class="{ checked: allSelected }"></view>
         <text>全选</text>
       </view>
-      <view class="settle-area">
+      <view v-if="managing" class="settle-area">
+        <button class="delete-selected" :class="{ active: selectedItems.length }" @tap="deleteSelected">删除选中{{ selectedItems.length ? `(${selectedItems.length})` : '' }}</button>
+      </view>
+      <view v-else class="settle-area">
         <text class="sum-label">合计</text>
         <text class="sum-price">¥{{ money(total) }}</text>
         <button class="settle" :class="{ active: selectedItems.length }" @tap="checkout">去预订</button>
@@ -237,6 +265,11 @@ defineExpose({
   text-align: right;
   color: #111;
   font-size: 28rpx;
+}
+
+.manage.active {
+  color: #ffb700;
+  font-weight: 800;
 }
 
 .auth-strip {
@@ -448,4 +481,17 @@ defineExpose({
 .settle.active {
   background: #ffb700;
 }
+
+.delete-selected {
+  width: 220rpx;
+  height: 70rpx;
+  line-height: 70rpx;
+  border-radius: 999rpx;
+  color: #fff;
+  background: #f20d2f;
+  font-size: 30rpx;
+  font-weight: 800;
+}
+
+.delete-selected::after { border: none; }
 </style>

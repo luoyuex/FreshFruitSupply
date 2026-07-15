@@ -284,6 +284,12 @@ onPullDownRefresh(async () => {
         <text>{{ item.fruit_name }} x {{ item.quantity }}{{ item.unit }}</text>
         <text>¥{{ money(item.subtotal) }}</text>
       </view>
+      <view v-if="order.reissue_coupons && order.reissue_coupons.length" class="reissue-box">
+        <text class="reissue-title">补送商品（随单免费补配）</text>
+        <view v-for="coupon in order.reissue_coupons" :key="coupon.id" class="reissue-line">
+          <text>· {{ coupon.name }}<text v-if="coupon.description"> （{{ coupon.description }}）</text></text>
+        </view>
+      </view>
       <view class="total">预估总价 ¥{{ money(order.estimated_total) }}</view>
       <picker :range="statuses.map(statusLabel)" @change="changeStatus(order, $event)">
         <view class="picker">修改状态</view>
@@ -310,6 +316,12 @@ onPullDownRefresh(async () => {
         <view v-for="item in order.items" :key="item.id" class="item">
           <text>{{ item.fruit_name }} · {{ item.spec }}</text>
           <text>{{ item.quantity }}{{ item.unit }}</text>
+        </view>
+        <view v-if="order.reissue_coupons && order.reissue_coupons.length" class="reissue-box">
+          <text class="reissue-title">补送商品（随单免费补配）</text>
+          <view v-for="coupon in order.reissue_coupons" :key="coupon.id" class="reissue-line">
+            <text>· {{ coupon.name }}<text v-if="coupon.description"> （{{ coupon.description }}）</text></text>
+          </view>
         </view>
         <view class="delivery-total">{{ order.order_no }} · ¥{{ money(order.estimated_total) }}</view>
       </view>
@@ -356,6 +368,9 @@ onPullDownRefresh(async () => {
 .info, .item { margin-top: 12rpx; color: #48613b; font-size: 25rpx; line-height: 1.5; }
 .total { margin-top: 18rpx; text-align: right; font-size: 30rpx; }
 .note { margin-top: 12rpx; padding: 12rpx 16rpx; border-radius: 14rpx; color: #df5d00; background: #fff3d2; font-size: 24rpx; }
+.reissue-box { margin-top: 14rpx; padding: 14rpx 18rpx; border-radius: 14rpx; background: #eef7e6; }
+.reissue-title { display: block; color: #2f6b23; font-size: 24rpx; font-weight: 900; }
+.reissue-line { margin-top: 8rpx; color: #3d5a2f; font-size: 24rpx; line-height: 1.5; }
 .delivery-total { margin-top: 16rpx; text-align: right; color: #173b16; font-size: 25rpx; font-weight: 800; }
 .picker { margin-top: 18rpx; height: 68rpx; line-height: 68rpx; text-align: center; border-radius: 999rpx; color: #fff; background: #ef7d00; }
 .select-all::after, .bulk-btn::after, .print-btn::after, .filter-mini::after { border: none; }

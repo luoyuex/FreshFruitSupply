@@ -11,9 +11,9 @@ from sqlalchemy.orm import Session, joinedload
 from app.api.deps import admin_permissions, get_current_admin, get_optional_auth_customer, require_admin_permission
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db.session import get_db
-from app.models import Admin, CouponTemplate, Customer, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, PriceQuote
-from app.schemas import AdminAuthOut, AdminEntryVisibleOut, AdminLogin, AdminOut, AdminPasswordUpdate, AdminUpsert, CouponGrantIn, CouponTemplateOut, CouponTemplateUpsert, CustomerAdminOut, CustomerCouponOut, DeliveryConfigOut, DeliveryConfigUpdate, FruitCategoryOut, FruitCategoryUpsert, FruitOut, FruitUpsert, OrderBulkStatusUpdate, OrderOut, OrderStatusUpdate, SalesStatsOut, VerificationReview
-from app.services.coupon import effective_coupon_status, grant_coupon_to_customer, grant_coupons_on_verified
+from app.models import Admin, Announcement, CouponTemplate, Customer, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, PriceQuote
+from app.schemas import AdminAuthOut, AdminEntryVisibleOut, AdminLogin, AdminOut, AdminPasswordUpdate, AdminUpsert, AnnouncementOut, AnnouncementUpsert, CouponGrantIn, CouponTemplateOut, CouponTemplateUpsert, CustomerAdminOut, CustomerCouponOut, DeliveryConfigOut, DeliveryConfigUpdate, FruitCategoryOut, FruitCategoryUpsert, FruitOut, FruitUpsert, OrderBulkStatusUpdate, OrderOut, OrderStatusUpdate, SalesStatsOut, VerificationReview
+from app.services.coupon import attach_reissue_coupons, effective_coupon_status, grant_coupon_to_customer, grant_coupons_on_verified
 from app.services.settings import DELIVERY_FEE_KEY, DELIVERY_FREE_THRESHOLD_KEY, get_delivery_config, set_setting
 from app.services.upload import save_upload, to_public_url, to_public_urls, to_storage_path, to_storage_paths
 
@@ -25,14 +25,29 @@ def _admin_payload(admin: Admin) -> AdminOut:
 
 
 def _release_order_coupon(db: Session, order: Order) -> None:
-    """订单取消时，释放其占用且未过期的优惠券，回到未使用状态。"""
-    if not order.coupon_id:
-        return
-    coupon = db.query(CustomerCoupon).filter(CustomerCoupon.id == order.coupon_id).first()
-    if coupon and coupon.status == 'used' and coupon.expires_at >= datetime.now():
-        coupon.status = 'unused'
-        coupon.used_at = None
-        coupon.order_id = None
+    """订单取消时，释放其占用且未过期的券（满减券 + 补送券），回到未使用状态。
+
+    满减券经 Order.coupon_id 关联；补送券经 CustomerCoupon.order_id 反查，可能多张。
+    仅回滚未过期的券——过期券放回也无用，保持 used 更符合直觉。
+    """
+    now = datetime.now()
+
+    def _reset(coupon: CustomerCoupon | None) -> None:
+        if coupon and coupon.status == 'used' and coupon.expires_at >= now:
+            coupon.status = 'unused'
+            coupon.used_at = None
+            coupon.order_id = None
+
+    if order.coupon_id:
+        _reset(db.query(CustomerCoupon).filter(CustomerCoupon.id == order.coupon_id).first())
+
+    reissue_coupons = (
+        db.query(CustomerCoupon)
+        .filter(CustomerCoupon.order_id == order.id, CustomerCoupon.kind == 'reissue')
+        .all()
+    )
+    for coupon in reissue_coupons:
+        _reset(coupon)
 
 
 def _assert_not_last_super_admin(db: Session, admin: Admin, next_role: str | None = None, next_active: bool | None = None) -> None:
@@ -159,7 +174,9 @@ def list_orders(
         query = query.filter(Order.created_at >= start_at, Order.created_at < end_at)
     if status:
         query = query.filter(Order.status == status)
-    return query.all()
+    orders = query.all()
+    attach_reissue_coupons(db, orders)
+    return orders
 
 
 @router.get('/sales-stats', response_model=SalesStatsOut)
@@ -251,7 +268,9 @@ def delivery_sheet(
         start_at = datetime.combine(target_date, time.min)
         end_at = start_at + timedelta(days=1)
         query = query.filter(Order.created_at >= start_at, Order.created_at < end_at)
-    return query.all()
+    orders = query.all()
+    attach_reissue_coupons(db, orders)
+    return orders
 
 
 @router.patch('/orders/bulk-status', response_model=list[OrderOut])
@@ -277,6 +296,7 @@ def bulk_update_order_status(
     db.commit()
     for order in orders:
         db.refresh(order)
+    attach_reissue_coupons(db, orders)
     return sorted(orders, key=lambda item: payload.order_ids.index(item.id))
 
 
@@ -295,6 +315,7 @@ def update_order_status(
     order.status = payload.status
     db.commit()
     db.refresh(order)
+    attach_reissue_coupons(db, [order])
     return order
 
 
@@ -407,14 +428,17 @@ def create_coupon_template(
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail='券名称不能为空')
+    # 补送券无金额/门槛、不自动发放，统一归零，避免前端漏传时脏数据
+    is_reissue = payload.kind == 'reissue'
     template = CouponTemplate(
         name=name,
         description=payload.description,
+        kind=payload.kind,
         discount_type='amount',
-        amount=payload.amount,
-        min_spend=payload.min_spend,
+        amount=Decimal('0') if is_reissue else payload.amount,
+        min_spend=Decimal('0') if is_reissue else payload.min_spend,
         valid_days=payload.valid_days,
-        grant_on_verified=payload.grant_on_verified,
+        grant_on_verified=False if is_reissue else payload.grant_on_verified,
         per_customer_limit=payload.per_customer_limit,
         is_active=payload.is_active,
     )
@@ -437,12 +461,14 @@ def update_coupon_template(
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail='券名称不能为空')
+    is_reissue = payload.kind == 'reissue'
     template.name = name
     template.description = payload.description
-    template.amount = payload.amount
-    template.min_spend = payload.min_spend
+    template.kind = payload.kind
+    template.amount = Decimal('0') if is_reissue else payload.amount
+    template.min_spend = Decimal('0') if is_reissue else payload.min_spend
     template.valid_days = payload.valid_days
-    template.grant_on_verified = payload.grant_on_verified
+    template.grant_on_verified = False if is_reissue else payload.grant_on_verified
     template.per_customer_limit = payload.per_customer_limit
     template.is_active = payload.is_active
     db.commit()
@@ -491,6 +517,65 @@ def update_delivery_settings(
     db.commit()
     threshold, fee = get_delivery_config(db)
     return DeliveryConfigOut(free_threshold=threshold, fee=fee)
+
+
+@router.get('/announcements', response_model=list[AnnouncementOut])
+def list_announcements(
+    db: Session = Depends(get_db),
+    _: Admin = Depends(require_admin_permission('settings')),
+):
+    return db.query(Announcement).order_by(Announcement.id.desc()).all()
+
+
+@router.post('/announcements', response_model=AnnouncementOut)
+def create_announcement(
+    payload: AnnouncementUpsert,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(require_admin_permission('settings')),
+):
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail='公告标题不能为空')
+    announcement = Announcement(title=title, content=payload.content, is_active=payload.is_active)
+    db.add(announcement)
+    db.commit()
+    db.refresh(announcement)
+    return announcement
+
+
+@router.patch('/announcements/{announcement_id}', response_model=AnnouncementOut)
+def update_announcement(
+    announcement_id: int,
+    payload: AnnouncementUpsert,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(require_admin_permission('settings')),
+):
+    announcement = db.query(Announcement).filter(Announcement.id == announcement_id).first()
+    if not announcement:
+        raise HTTPException(status_code=404, detail='Announcement not found')
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail='公告标题不能为空')
+    announcement.title = title
+    announcement.content = payload.content
+    announcement.is_active = payload.is_active
+    db.commit()
+    db.refresh(announcement)
+    return announcement
+
+
+@router.delete('/announcements/{announcement_id}')
+def delete_announcement(
+    announcement_id: int,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(require_admin_permission('settings')),
+):
+    announcement = db.query(Announcement).filter(Announcement.id == announcement_id).first()
+    if not announcement:
+        raise HTTPException(status_code=404, detail='Announcement not found')
+    db.delete(announcement)
+    db.commit()
+    return {'ok': True}
 
 
 @router.get('/customers/{customer_id}/coupons', response_model=list[CustomerCouponOut])

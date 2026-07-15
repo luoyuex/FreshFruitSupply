@@ -20,6 +20,7 @@ const activeTemplates = computed(() => templates.value.filter((item) => item.is_
 
 const form = reactive({
   name: '',
+  kind: 'discount', // discount=满减券；reissue=商品补送券（无金额/门槛）
   amount: '',
   minSpend: '',
   validDays: '30',
@@ -27,6 +28,8 @@ const form = reactive({
   isActive: true,
   description: '',
 })
+
+const isReissueForm = computed(() => form.kind === 'reissue')
 
 async function loadTemplates() {
   loading.value = true
@@ -42,6 +45,7 @@ async function loadTemplates() {
 function openCreate() {
   editingId.value = null
   form.name = ''
+  form.kind = 'discount'
   form.amount = ''
   form.minSpend = ''
   form.validDays = '30'
@@ -54,6 +58,7 @@ function openCreate() {
 function openEdit(template) {
   editingId.value = template.id
   form.name = template.name
+  form.kind = template.kind || 'discount'
   form.amount = String(template.amount)
   form.minSpend = String(template.min_spend)
   form.validDays = String(template.valid_days)
@@ -69,8 +74,11 @@ function closeModal() {
 
 function validate() {
   if (!form.name.trim()) return '请填写券名称'
-  if (!(Number(form.amount) > 0)) return '抵扣金额需大于0'
-  if (Number(form.minSpend) < 0) return '使用门槛不能为负'
+  // 补送券无金额/门槛，只校验名称与有效期；满减券才校验金额门槛
+  if (!isReissueForm.value) {
+    if (!(Number(form.amount) > 0)) return '抵扣金额需大于0'
+    if (Number(form.minSpend) < 0) return '使用门槛不能为负'
+  }
   if (!(Number(form.validDays) > 0)) return '有效天数需大于0'
   return ''
 }
@@ -82,13 +90,16 @@ async function save() {
     return
   }
   saving.value = true
+  const isReissue = form.kind === 'reissue'
   const payload = {
     name: form.name.trim(),
     description: form.description.trim() || null,
-    amount: Number(form.amount),
-    min_spend: Number(form.minSpend || 0),
+    kind: form.kind,
+    // 补送券无金额/门槛/自动发放，后端也会兜底归零，这里同步传 0/false 保持一致
+    amount: isReissue ? 0 : Number(form.amount),
+    min_spend: isReissue ? 0 : Number(form.minSpend || 0),
     valid_days: Number(form.validDays),
-    grant_on_verified: form.grantOnVerified,
+    grant_on_verified: isReissue ? false : form.grantOnVerified,
     per_customer_limit: 1,
     is_active: form.isActive,
   }
@@ -170,11 +181,15 @@ onPullDownRefresh(async () => {
 
     <view v-for="template in templates" :key="template.id" class="card" @tap="openEdit(template)">
       <view class="card-head">
-        <text class="tpl-name">{{ template.name }}</text>
+        <view class="tpl-name-row">
+          <text class="tpl-name">{{ template.name }}</text>
+          <text class="tpl-kind" :class="{ reissue: template.kind === 'reissue' }">{{ template.kind === 'reissue' ? '补送券' : '满减券' }}</text>
+        </view>
         <text class="tpl-state" :class="{ off: !template.is_active }">{{ template.is_active ? '启用中' : '已停用' }}</text>
       </view>
-      <view class="tpl-amount">¥{{ money(template.amount) }} <text class="tpl-cond">{{ Number(template.min_spend) > 0 ? `满${money(template.min_spend)}可用` : '无门槛' }}</text></view>
-      <view class="tpl-meta">有效期 {{ template.valid_days }} 天 · {{ template.grant_on_verified ? '认证通过自动发放' : '不自动发放' }}</view>
+      <view v-if="template.kind === 'reissue'" class="tpl-amount reissue">随单免费补配</view>
+      <view v-else class="tpl-amount">¥{{ money(template.amount) }} <text class="tpl-cond">{{ Number(template.min_spend) > 0 ? `满${money(template.min_spend)}可用` : '无门槛' }}</text></view>
+      <view class="tpl-meta">有效期 {{ template.valid_days }} 天 · {{ template.kind === 'reissue' ? '仅手动发放' : (template.grant_on_verified ? '认证通过自动发放' : '不自动发放') }}</view>
       <view v-if="template.description" class="tpl-desc">{{ template.description }}</view>
     </view>
 
@@ -182,22 +197,32 @@ onPullDownRefresh(async () => {
       <view class="modal-card" @tap.stop>
         <view class="modal-title">{{ editingId ? '编辑券种' : '新建券种' }}</view>
         <view class="field">
-          <text class="label">券名称</text>
-          <input v-model="form.name" class="input" placeholder="如 认证专享券" />
+          <text class="label">券类型</text>
+          <view class="kind-tabs">
+            <view class="kind-tab" :class="{ on: form.kind === 'discount' }" @tap="form.kind = 'discount'">满减券</view>
+            <view class="kind-tab" :class="{ on: form.kind === 'reissue' }" @tap="form.kind = 'reissue'">补送券</view>
+          </view>
+          <text class="kind-tip">{{ isReissueForm ? '补送券无金额门槛，随单免费补配对应商品，可与满减券叠加、多张同用，仅手动发放。' : '满减券按门槛抵扣金额，每单限用一张。' }}</text>
         </view>
         <view class="field">
-          <text class="label">抵扣金额（元）</text>
-          <input v-model="form.amount" class="input" type="digit" placeholder="如 10" />
+          <text class="label">{{ isReissueForm ? '补送内容（作为券名，如 补送-芒果1个）' : '券名称' }}</text>
+          <input v-model="form.name" class="input" :placeholder="isReissueForm ? '如 补送-草莓1盒' : '如 认证专享券'" />
         </view>
-        <view class="field">
-          <text class="label">使用门槛（满多少元，0 为无门槛）</text>
-          <input v-model="form.minSpend" class="input" type="digit" placeholder="如 100" />
-        </view>
+        <template v-if="!isReissueForm">
+          <view class="field">
+            <text class="label">抵扣金额（元）</text>
+            <input v-model="form.amount" class="input" type="digit" placeholder="如 10" />
+          </view>
+          <view class="field">
+            <text class="label">使用门槛（满多少元，0 为无门槛）</text>
+            <input v-model="form.minSpend" class="input" type="digit" placeholder="如 100" />
+          </view>
+        </template>
         <view class="field">
           <text class="label">有效天数（领取后）</text>
           <input v-model="form.validDays" class="input" type="number" placeholder="如 30" />
         </view>
-        <view class="switch-row">
+        <view v-if="!isReissueForm" class="switch-row">
           <text class="label">认证通过自动发放</text>
           <switch :checked="form.grantOnVerified" color="#2f6b23" @change="form.grantOnVerified = $event.detail.value" />
         </view>
@@ -257,13 +282,22 @@ onPullDownRefresh(async () => {
 .empty { text-align: center; color: #7a8a72; font-size: 26rpx; }
 
 .card-head { display: flex; align-items: center; justify-content: space-between; }
+.tpl-name-row { display: flex; align-items: center; gap: 12rpx; min-width: 0; }
 .tpl-name { color: #173b16; font-size: 30rpx; font-weight: 900; }
+.tpl-kind { flex: 0 0 auto; padding: 4rpx 14rpx; border-radius: 999rpx; color: #b26a00; background: #fff2df; font-size: 21rpx; font-weight: 800; }
+.tpl-kind.reissue { color: #1f7a52; background: #e4f6ec; }
 .tpl-state { color: #2f6b23; font-size: 23rpx; font-weight: 800; }
 .tpl-state.off { color: #999; }
 .tpl-amount { margin-top: 14rpx; color: #f20d2f; font-size: 36rpx; font-weight: 900; }
+.tpl-amount.reissue { color: #1f7a52; font-size: 30rpx; }
 .tpl-cond { margin-left: 12rpx; color: #ff6a00; font-size: 24rpx; font-weight: 700; }
 .tpl-meta { margin-top: 12rpx; color: #60715c; font-size: 24rpx; }
 .tpl-desc { margin-top: 8rpx; color: #999; font-size: 23rpx; }
+
+.kind-tabs { display: flex; gap: 12rpx; margin-top: 12rpx; }
+.kind-tab { flex: 1; height: 72rpx; line-height: 72rpx; text-align: center; border-radius: 16rpx; color: #60715c; background: #f4f6f0; font-size: 26rpx; font-weight: 800; }
+.kind-tab.on { color: #fff; background: #2f6b23; }
+.kind-tip { display: block; margin-top: 12rpx; color: #8a9784; font-size: 22rpx; line-height: 1.5; }
 
 .modal-mask {
   position: fixed;

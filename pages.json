@@ -71,6 +71,19 @@
       }
     },
     {
+      "path": "pages/announcement/index",
+      "style": {
+        "navigationBarTitleText": "公告消息",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/announcement/detail",
+      "style": {
+        "navigationBarTitleText": "公告详情"
+      }
+    },
+    {
       "path": "pages/verify/index",
       "style": {
         "navigationBarTitleText": "客户认证",
@@ -136,6 +149,13 @@
       "path": "pages/admin/settings/index",
       "style": {
         "navigationBarTitleText": "系统设置",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/admin/announcements/index",
+      "style": {
+        "navigationBarTitleText": "公告管理",
         "enablePullDownRefresh": true
       }
     }

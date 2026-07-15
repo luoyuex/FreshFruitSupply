@@ -11,6 +11,8 @@ import { categoryIconPath } from '../../utils/categoryIcons.js'
 const { loading, error, keyword, activeCategory, categoryItems, visibleFruits, fruits, loadFruits } = useFruitQuotes()
 const customer = shallowRef(null)
 const cartTotal = shallowRef(0)
+const announcementItems = shallowRef([])
+const announcementVisible = shallowRef(false)
 
 const isVerified = computed(() => customer.value?.verification_status === 'verified')
 const showVerifyGuide = computed(() => !isVerified.value)
@@ -34,6 +36,29 @@ async function loadCustomer() {
     customer.value = await request({ url: '/customers/me' })
   } catch (err) {
     customer.value = null
+  }
+}
+
+// 公告：登录用户进首页时，有未读则自动弹最新公告；关闭即标记已读
+async function loadAnnouncements() {
+  if (!hasCustomerLogin()) return
+  try {
+    const feed = await request({ url: '/announcements' })
+    announcementItems.value = feed.items || []
+    if (Number(feed.unread_count) > 0) {
+      announcementVisible.value = true
+    }
+  } catch (err) {
+    // 公告拉取失败不影响首页正常使用
+  }
+}
+
+async function closeAnnouncement() {
+  announcementVisible.value = false
+  try {
+    await request({ url: '/announcements/read', method: 'POST' })
+  } catch (err) {
+    // 标记已读失败无妨，下次进入仍会重试
   }
 }
 
@@ -68,6 +93,7 @@ function goCategory() {
 onMounted(() => {
   loadFruits()
   loadCustomer()
+  loadAnnouncements()
 })
 
 onShow(() => {
@@ -188,6 +214,8 @@ defineExpose({
     </view>
 
     <float-cart :count="cartTotal" />
+
+    <announcement-modal :visible="announcementVisible" :items="announcementItems" @close="closeAnnouncement" />
   </view>
 </template>
 

@@ -29,6 +29,8 @@ class Customer(TimestampMixin, Base):
     shop_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     contact_name: Mapped[str | None] = mapped_column(String(60), nullable=True)
     business_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    # 公告已读位：记录该用户读到的最新公告 id，未读 = 启用中且 id 更大的公告
+    last_read_announcement_id: Mapped[int] = mapped_column(Integer, default=0)
 
     verifications: Mapped[list['CustomerVerification']] = relationship(back_populates='customer')
     orders: Mapped[list['Order']] = relationship(back_populates='customer')
@@ -223,12 +225,23 @@ class SystemSetting(TimestampMixin, Base):
     value: Mapped[str] = mapped_column(Text)
 
 
+class Announcement(TimestampMixin, Base):
+    __tablename__ = 'announcements'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    title: Mapped[str] = mapped_column(String(120))
+    content: Mapped[str] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+
+
 class CouponTemplate(TimestampMixin, Base):
     __tablename__ = 'coupon_templates'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     name: Mapped[str] = mapped_column(String(80))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # discount=满减券（有金额/门槛，每单限一张，可算抵扣）；reissue=商品补送券（无金额，配货标记，可叠加多张）
+    kind: Mapped[str] = mapped_column(String(16), default='discount', index=True)
     discount_type: Mapped[str] = mapped_column(String(16), default='amount')  # 预留扩展，本期只用 amount
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0)
     min_spend: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)  # 满减门槛，0=无门槛
@@ -246,6 +259,10 @@ class CustomerCoupon(TimestampMixin, Base):
     template_id: Mapped[int] = mapped_column(ForeignKey('coupon_templates.id'), index=True)
     # 发放时从模板快照，模板后续改动不影响已发出的券
     name: Mapped[str] = mapped_column(String(80))
+    # 从模板快照的券类型：discount=满减券，reissue=商品补送券（无金额，配货标记）
+    kind: Mapped[str] = mapped_column(String(16), default='discount', index=True)
+    # 补送券的补送说明快照（模板后续改动不影响已发出的券）；满减券一般为空
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2))
     min_spend: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
     status: Mapped[str] = mapped_column(String(16), default='unused', index=True)  # unused/used/expired

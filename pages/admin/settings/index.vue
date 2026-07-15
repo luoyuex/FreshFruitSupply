@@ -1,6 +1,6 @@
 <script setup>
-import { computed, reactive, shallowRef } from 'vue'
-import { onMounted, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
+import { computed, onMounted, reactive, shallowRef } from 'vue'
+import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { request } from '../../../utils/request.js'
 import { money } from '../../../utils/format.js'
 import { goAdminNav, redirectIfNoPermission, visibleAdminNavItems } from '../../../utils/admin.js'
@@ -65,6 +65,10 @@ function guardedLoad() {
   loadConfig()
 }
 
+function goAnnouncements() {
+  uni.navigateTo({ url: '/pages/admin/announcements/index' })
+}
+
 onMounted(guardedLoad)
 onShow(guardedLoad)
 
@@ -101,6 +105,14 @@ onPullDownRefresh(async () => {
       </view>
 
       <button class="save" :loading="saving" :disabled="saving || loading" @tap="save">保存</button>
+    </view>
+
+    <view class="entry-card" @tap="goAnnouncements">
+      <view class="entry-main">
+        <view class="entry-title">公告管理</view>
+        <view class="entry-sub">发布 / 编辑给用户的公告通知</view>
+      </view>
+      <text class="entry-arrow">›</text>
     </view>
   </view>
 </template>
@@ -151,4 +163,19 @@ onPullDownRefresh(async () => {
   font-weight: 800;
 }
 .save::after { border: none; }
+
+.entry-card {
+  display: flex;
+  align-items: center;
+  gap: 18rpx;
+  margin-top: 20rpx;
+  padding: 30rpx 26rpx;
+  border-radius: 26rpx;
+  background: #fff;
+  box-shadow: 0 10rpx 26rpx rgba(73,83,47,.08);
+}
+.entry-main { flex: 1; min-width: 0; }
+.entry-title { color: #173b16; font-size: 30rpx; font-weight: 900; }
+.entry-sub { margin-top: 8rpx; color: #7a8a72; font-size: 24rpx; }
+.entry-arrow { color: #b9c3af; font-size: 40rpx; }
 </style>

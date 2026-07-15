@@ -3,7 +3,7 @@ import { computed, reactive, ref, shallowRef, watch } from 'vue'
 import { onLoad, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { clearSelectedCartItems } from '../../utils/cart.js'
 import { dateText, fruitIcon, money } from '../../utils/format.js'
-import { couponDiscount, isCouponUsable, pickBestCoupon } from '../../utils/coupon.js'
+import { couponDiscount, isCouponUsable, isReissueCoupon, pickBestCoupon } from '../../utils/coupon.js'
 import { request } from '../../utils/request.js'
 import { hasCustomerLogin, isPlaceholderPhone, loginWithWeChat } from '../../utils/auth.js'
 
@@ -36,6 +36,11 @@ const selectedCoupon = shallowRef(null)
 const couponPickerVisible = shallowRef(false)
 const couponManuallySet = shallowRef(false)
 
+// 商品补送券：无金额/门槛，可多张叠加，仅作配货标记，不影响实付
+const reissueCoupons = ref([])
+const selectedReissueIds = ref([])
+const reissuePickerVisible = shallowRef(false)
+
 // 配送费配置：包邮门槛与配送费，由后台配置，下单页据此估算
 const deliveryConfig = reactive({ freeThreshold: 120, fee: 10 })
 
@@ -47,6 +52,9 @@ const couponDiscountValue = computed(() => couponDiscount(selectedCoupon.value, 
 const deliveryFee = computed(() => (estimatedTotal.value >= deliveryConfig.freeThreshold ? 0 : deliveryConfig.fee))
 const payableTotal = computed(() => Math.max(0, estimatedTotal.value - couponDiscountValue.value) + deliveryFee.value)
 const usableCouponCount = computed(() => availableCoupons.value.filter((item) => isCouponUsable(item, estimatedTotal.value)).length)
+// 已勾选的补送券（按可选列表过滤，避免残留已失效的 id）
+const selectedReissueCoupons = computed(() => reissueCoupons.value.filter((item) => selectedReissueIds.value.includes(item.id)))
+const selectedReissueCount = computed(() => selectedReissueCoupons.value.length)
 const filteredFruitOptions = computed(() => {
   const keyword = productKeyword.value.trim().toLowerCase()
   if (!keyword) return fruitOptions.value
@@ -210,10 +218,20 @@ async function loadCoupons() {
     const list = Array.isArray(coupons) ? coupons : []
     const currentOrderId = Number(editingOrderId.value) || null
     // 可选：未使用的券，外加本订单当前已占用的券（编辑时保留展示与勾选）
-    availableCoupons.value = list.filter((item) => item.status === 'unused' || (currentOrderId && item.order_id === currentOrderId))
-    // 编辑模式：默认预选本订单原先使用的券
+    const selectable = list.filter((item) => item.status === 'unused' || (currentOrderId && item.order_id === currentOrderId))
+    // 满减券进单选列表，补送券进多选列表
+    availableCoupons.value = selectable.filter((item) => !isReissueCoupon(item))
+    reissueCoupons.value = selectable.filter((item) => isReissueCoupon(item))
+    // 编辑模式：默认勾选本订单原先占用的补送券（未手动改动时）
+    const editReissueIds = currentOrderId
+      ? reissueCoupons.value.filter((item) => item.order_id === currentOrderId).map((item) => item.id)
+      : []
+    selectedReissueIds.value = selectedReissueIds.value.length
+      ? selectedReissueIds.value.filter((id) => reissueCoupons.value.some((item) => item.id === id))
+      : editReissueIds
+    // 编辑模式：默认预选本订单原先使用的满减券
     if (currentOrderId && !couponManuallySet.value) {
-      const current = list.find((item) => item.order_id === currentOrderId)
+      const current = availableCoupons.value.find((item) => item.order_id === currentOrderId)
       if (current) {
         selectedCoupon.value = current
         return
@@ -221,6 +239,7 @@ async function loadCoupons() {
     }
   } catch (err) {
     availableCoupons.value = []
+    reissueCoupons.value = []
   }
   if (selectedCoupon.value) {
     selectedCoupon.value = availableCoupons.value.find((item) => item.id === selectedCoupon.value.id) || null
@@ -265,6 +284,25 @@ function clearCoupon() {
   selectedCoupon.value = null
   couponManuallySet.value = true
   couponPickerVisible.value = false
+}
+
+function openReissuePicker() {
+  reissuePickerVisible.value = true
+}
+
+function closeReissuePicker() {
+  reissuePickerVisible.value = false
+}
+
+function toggleReissue(coupon) {
+  const ids = selectedReissueIds.value
+  selectedReissueIds.value = ids.includes(coupon.id)
+    ? ids.filter((id) => id !== coupon.id)
+    : [...ids, coupon.id]
+}
+
+function isReissueSelected(coupon) {
+  return selectedReissueIds.value.includes(coupon.id)
 }
 
 watch(estimatedTotal, () => autoSelectCoupon())
@@ -439,6 +477,7 @@ async function submitOrder() {
         delivery_note: form.deliveryNote,
         items: orderItems.value.map((item) => ({ fruit_id: item.id, quantity: Number(item.quantity) })),
         coupon_id: selectedCoupon.value?.id || null,
+        reissue_coupon_ids: selectedReissueIds.value.slice(),
       },
     })
     if (checkoutFromCart.value) {
@@ -546,6 +585,15 @@ onPullDownRefresh(async () => {
       </view>
     </view>
 
+    <view v-if="reissueCoupons.length" class="coupon-row reissue-row" @tap="openReissuePicker">
+      <text class="coupon-row-label">补送券</text>
+      <view class="coupon-row-value">
+        <text v-if="selectedReissueCount" class="coupon-row-picked">已选 {{ selectedReissueCount }} 张</text>
+        <text v-else class="coupon-row-hint">{{ reissueCoupons.length }} 张可用</text>
+        <text class="coupon-row-arrow">›</text>
+      </view>
+    </view>
+
     <view class="coupon-row fee-row">
       <text class="coupon-row-label">配送费</text>
       <view class="coupon-row-value">
@@ -625,7 +673,7 @@ onPullDownRefresh(async () => {
         <view class="modal-head">
           <view>
             <view class="modal-title">选择优惠券</view>
-            <view class="modal-sub">满减券可与认证价叠加，每单限用一张</view>
+            <view class="modal-sub">每单限用一张，不与其他券叠加</view>
           </view>
           <text class="modal-close" @tap="closeCouponPicker">×</text>
         </view>
@@ -655,6 +703,42 @@ onPullDownRefresh(async () => {
           </view>
         </scroll-view>
         <button class="coupon-clear" @tap="clearCoupon">不使用优惠券</button>
+      </view>
+    </view>
+
+    <view v-if="reissuePickerVisible" class="modal-mask" @tap="closeReissuePicker">
+      <view class="coupon-modal" @tap.stop>
+        <view class="modal-head">
+          <view>
+            <view class="modal-title">选择补送券</view>
+            <view class="modal-sub">可多张同时使用，随单免费补配对应商品</view>
+          </view>
+          <text class="modal-close" @tap="closeReissuePicker">×</text>
+        </view>
+        <scroll-view class="coupon-list" scroll-y>
+          <view v-if="!reissueCoupons.length" class="picker-empty">暂无可用补送券</view>
+          <view
+            v-for="coupon in reissueCoupons"
+            :key="coupon.id"
+            class="coupon-card-item"
+            :class="{ active: isReissueSelected(coupon) }"
+            @tap="toggleReissue(coupon)"
+          >
+            <view class="coupon-face reissue-face">
+              <text class="reissue-face-tag">补送</text>
+            </view>
+            <view class="coupon-meta">
+              <view class="coupon-meta-name">{{ coupon.name }}</view>
+              <view v-if="coupon.description" class="coupon-meta-cond">{{ coupon.description }}</view>
+              <view class="coupon-meta-expire">有效期至 {{ dateText(coupon.expires_at) }}</view>
+            </view>
+            <view class="coupon-pick">
+              <text v-if="isReissueSelected(coupon)" class="coupon-radio on">✓</text>
+              <text v-else class="coupon-radio">○</text>
+            </view>
+          </view>
+        </scroll-view>
+        <button class="coupon-clear" @tap="closeReissuePicker">完成</button>
       </view>
     </view>
 
@@ -1075,6 +1159,9 @@ onPullDownRefresh(async () => {
 .coupon-row-none { color: #999; font-size: 27rpx; }
 .coupon-row-arrow { color: #bbb; font-size: 34rpx; }
 
+/* 补送券行紧贴优惠券行 */
+.reissue-row { margin-top: 0; }
+
 /* 配送费行紧贴优惠券行，避免两块卡片间距过大 */
 .fee-row { margin-top: 0; }
 .fee-amount { color: #f20d2f; font-size: 30rpx; font-weight: 900; }
@@ -1125,6 +1212,10 @@ onPullDownRefresh(async () => {
 
 .coupon-face-unit { font-size: 26rpx; font-weight: 800; }
 .coupon-face-amount { font-size: 52rpx; font-weight: 900; }
+
+/* 补送券无金额，用绿色标记区分满减券的红色面额 */
+.reissue-face { background: linear-gradient(135deg, #4caf50, #2f6b23); }
+.reissue-face-tag { font-size: 34rpx; font-weight: 900; }
 
 .coupon-meta { flex: 1; min-width: 0; }
 .coupon-meta-name { color: #222; font-size: 29rpx; font-weight: 900; }

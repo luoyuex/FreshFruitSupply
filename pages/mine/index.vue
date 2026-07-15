@@ -13,6 +13,7 @@ const loading = shallowRef(false)
 const loggedIn = shallowRef(hasCustomerLogin())
 const adminEntryVisible = shallowRef(false)
 const couponCount = shallowRef(0)
+const announcementUnread = shallowRef(0)
 
 const isLoggedIn = computed(() => loggedIn.value)
 const displayName = computed(() => {
@@ -66,6 +67,25 @@ async function loadMine() {
 async function goVerify() {
   if (!(await ensureLogin())) return
   uni.navigateTo({ url: '/pages/verify/index' })
+}
+
+// 公告：信封红点仅登录用户显示（后端按账号记录未读）。点信封进公告列表页，
+// 在列表页看历史/看详情/一键已读，回来时 onShow 会重新拉取刷新红点。
+async function loadAnnouncements() {
+  if (!hasCustomerLogin()) {
+    announcementUnread.value = 0
+    return
+  }
+  try {
+    const feed = await request({ url: '/announcements' })
+    announcementUnread.value = Number(feed.unread_count || 0)
+  } catch (err) {
+    announcementUnread.value = 0
+  }
+}
+
+function openAnnouncements() {
+  uni.navigateTo({ url: '/pages/announcement/index' })
 }
 
 async function ensureLogin() {
@@ -132,12 +152,18 @@ function logout() {
   })
 }
 
-onMounted(loadMine)
-onShow(loadMine)
+onMounted(() => {
+  loadMine()
+  loadAnnouncements()
+})
+onShow(() => {
+  loadMine()
+  loadAnnouncements()
+})
 
 onPullDownRefresh(async () => {
   try {
-    await loadMine()
+    await Promise.all([loadMine(), loadAnnouncements()])
   } finally {
     uni.stopPullDownRefresh()
   }
@@ -181,7 +207,10 @@ defineExpose({
         <view class="account">{{ isLoggedIn ? (phone ? `账号名：${phone}` : '已登录，手机号可选绑定') : '点击登录后查看个人信息' }}</view>
       </view>
       <view class="icon-row">
-        <image class="header-icon" src="/static/icons/mail.svg" mode="aspectFit" />
+        <view class="icon-badge-wrap" @tap.stop="openAnnouncements">
+          <image class="header-icon" src="/static/icons/mail.svg" mode="aspectFit" />
+          <view v-if="announcementUnread > 0" class="badge-dot"></view>
+        </view>
       </view>
     </view>
 
@@ -326,6 +355,22 @@ defineExpose({
 .header-icon {
   width: 44rpx;
   height: 44rpx;
+}
+
+.icon-badge-wrap {
+  position: relative;
+  padding: 6rpx;
+}
+
+.badge-dot {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 18rpx;
+  height: 18rpx;
+  border-radius: 50%;
+  background: #f20d2f;
+  border: 2rpx solid #fff;
 }
 
 .phone-card,

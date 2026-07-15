@@ -2,6 +2,7 @@
 import { computed, ref, shallowRef } from 'vue'
 import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { dateTimeSec, money, statusLabel } from '../../utils/format.js'
+import { isReissueCoupon } from '../../utils/coupon.js'
 import { request } from '../../utils/request.js'
 import { hasCustomerLogin, loginWithWeChat } from '../../utils/auth.js'
 
@@ -96,14 +97,21 @@ onPullDownRefresh(async () => {
       v-for="coupon in filteredCoupons"
       :key="coupon.id"
       class="coupon-card"
-      :class="{ dim: coupon.status !== 'unused' }"
+      :class="{ dim: coupon.status !== 'unused', reissue: isReissueCoupon(coupon) }"
     >
-      <view class="coupon-left">
-        <view class="face"><text class="unit">¥</text><text class="amount">{{ money(coupon.amount) }}</text></view>
-        <view class="cond">{{ Number(coupon.min_spend) > 0 ? `满${money(coupon.min_spend)}可用` : '无门槛' }}</view>
+      <view class="coupon-left" :class="{ reissue: isReissueCoupon(coupon) }">
+        <template v-if="isReissueCoupon(coupon)">
+          <view class="reissue-icon">🎁</view>
+          <view class="cond">补送券</view>
+        </template>
+        <template v-else>
+          <view class="face"><text class="unit">¥</text><text class="amount">{{ money(coupon.amount) }}</text></view>
+          <view class="cond">{{ Number(coupon.min_spend) > 0 ? `满${money(coupon.min_spend)}可用` : '无门槛' }}</view>
+        </template>
       </view>
       <view class="coupon-right">
         <view class="name">{{ coupon.name }}</view>
+        <view v-if="isReissueCoupon(coupon)" class="reissue-sub">{{ coupon.description || '随单免费补配，可与优惠券叠加' }}</view>
         <view class="expire">有效期至 {{ dateTimeSec(coupon.expires_at) }}</view>
         <view class="status-tag" :class="coupon.status">{{ statusLabel(coupon.status) }}</view>
       </view>
@@ -207,6 +215,11 @@ onPullDownRefresh(async () => {
 .unit { font-size: 30rpx; font-weight: 800; }
 .amount { font-size: 68rpx; font-weight: 900; }
 .cond { color: #fff; font-size: 23rpx; opacity: .95; }
+
+/* 补送券左侧用绿色区分满减券的红色，图标替代金额面额 */
+.coupon-left.reissue { background: linear-gradient(135deg, #5bb84f, #2f6b23); }
+.reissue-icon { font-size: 60rpx; line-height: 1; }
+.reissue-sub { color: #2f6b23; font-size: 24rpx; font-weight: 700; }
 
 .coupon-right {
   flex: 1;

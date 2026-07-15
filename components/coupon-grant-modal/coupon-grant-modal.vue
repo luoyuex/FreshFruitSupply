@@ -114,8 +114,12 @@ function confirm() {
           @tap="pickTemplate(t.id)"
         >
           <view class="pick-main">
-            <view class="pick-name">{{ t.name }}</view>
-            <view class="pick-sub">¥{{ money(t.amount) }} · {{ Number(t.min_spend) > 0 ? `满${money(t.min_spend)}可用` : '无门槛' }} · 有效期{{ t.valid_days }}天</view>
+            <view class="pick-name">
+              <text>{{ t.name }}</text>
+              <text v-if="t.kind === 'reissue'" class="kind-tag">补送券</text>
+            </view>
+            <view v-if="t.kind === 'reissue'" class="pick-sub">随单免费补配 · 有效期{{ t.valid_days }}天</view>
+            <view v-else class="pick-sub">¥{{ money(t.amount) }} · {{ Number(t.min_spend) > 0 ? `满${money(t.min_spend)}可用` : '无门槛' }} · 有效期{{ t.valid_days }}天</view>
           </view>
           <text class="tick">{{ selectedTemplateId === t.id ? '✓' : '' }}</text>
         </view>
@@ -200,7 +204,8 @@ function confirm() {
 .pick-row.on { border-color: #2f6b23; background: #eef7e6; }
 
 .pick-main { flex: 1; min-width: 0; }
-.pick-name { color: #173b16; font-size: 28rpx; font-weight: 800; }
+.pick-name { display: flex; align-items: center; gap: 12rpx; color: #173b16; font-size: 28rpx; font-weight: 800; }
+.kind-tag { padding: 2rpx 12rpx; border-radius: 999rpx; color: #b45309; background: #fef0d8; font-size: 20rpx; font-weight: 800; }
 .pick-sub { margin-top: 6rpx; color: #60715c; font-size: 23rpx; }
 .tick { flex-shrink: 0; color: #2f6b23; font-size: 32rpx; font-weight: 900; }
 

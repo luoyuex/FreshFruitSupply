@@ -20,6 +20,13 @@ def _build_order_body(order: Order) -> str:
     ]
     for item in order.items:
         lines.append(f'- {item.fruit_name} {item.spec} x {item.quantity}{item.unit}，单价 {item.price}，小计 {item.subtotal}')
+    # 商品补送券（配货时随单免费补配，无金额）。属性由 attach_reissue_coupons 挂载，未挂载时视为空
+    reissue_coupons = getattr(order, 'reissue_coupons', None) or []
+    if reissue_coupons:
+        lines.extend(['', '补送商品（随单免费补配）：'])
+        for coupon in reissue_coupons:
+            note = f'（{coupon.description}）' if coupon.description else ''
+            lines.append(f'- {coupon.name}{note}')
     lines.extend(['', f'预估总价：{order.estimated_total}'])
     if order.discount_amount and order.discount_amount > 0:
         lines.append(f'优惠券抵扣：-{order.discount_amount}')

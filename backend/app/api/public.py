@@ -5,12 +5,12 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session, joinedload
 
-from app.api.deps import get_optional_auth_customer
+from app.api.deps import get_current_customer, get_optional_auth_customer
 from app.db.session import get_db
-from app.models import Customer, CustomerAddress, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, OrderItem
+from app.models import Announcement, Customer, CustomerAddress, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, OrderItem
 from app.models.domain import CHINA_TZ
-from app.schemas import CustomerAddressOut, CustomerAddressUpsert, CustomerCouponOut, CustomerOut, CustomerProfileUpdate, DeliveryConfigOut, FruitCategoryOut, FruitOut, OrderCreate, OrderOut, VerificationOut
-from app.services.coupon import compute_discount, effective_coupon_status, grant_coupons_on_verified
+from app.schemas import AnnouncementFeedOut, AnnouncementOut, AnnouncementReadOut, CustomerAddressOut, CustomerAddressUpsert, CustomerCouponOut, CustomerOut, CustomerProfileUpdate, DeliveryConfigOut, FruitCategoryOut, FruitOut, OrderCreate, OrderOut, VerificationOut
+from app.services.coupon import attach_reissue_coupons, compute_discount, effective_coupon_status, grant_coupons_on_verified
 from app.services.customer import get_or_create_customer
 from app.services.settings import compute_delivery_fee, get_delivery_config
 from app.services.email import send_order_email
@@ -67,6 +67,7 @@ def _apply_order_payload(order: Order, customer: Customer, payload: OrderCreate,
         ))
     order.estimated_total = estimated_total
     _apply_coupon(order, customer, payload.coupon_id, db)
+    _apply_reissue_coupons(order, customer, payload.reissue_coupon_ids, db)
     _apply_delivery_fee(order, db)
 
 
@@ -107,6 +108,9 @@ def _apply_coupon(order: Order, customer: Customer, coupon_id: int | None, db: S
     )
     if not coupon:
         raise HTTPException(status_code=400, detail='优惠券不存在或不属于当前账号')
+    # 满减券入口只接满减券；补送券走 reissue_coupon_ids，避免误把补送券当抵扣券
+    if coupon.kind != 'discount':
+        raise HTTPException(status_code=400, detail='该券不能作为抵扣券使用')
     # 允许编辑时重复提交本订单已占用的同一张券
     reused_on_this_order = coupon.status == 'used' and order.id is not None and coupon.order_id == order.id
     if coupon.status != 'unused' and not reused_on_this_order:
@@ -128,6 +132,59 @@ def _apply_coupon(order: Order, customer: Customer, coupon_id: int | None, db: S
         db.add(order)
     db.flush()
     coupon.order_id = order.id
+
+
+def _apply_reissue_coupons(order: Order, customer: Customer, coupon_ids: list[int], db: Session) -> None:
+    """挂载商品补送券：可叠加多张，无金额/门槛，不影响实付，仅作配货标记。
+
+    与满减券互不干扰。编辑时先释放本订单原先占用、且本次未再选中的补送券。
+    """
+    now = datetime.now()
+    wanted_ids = list(dict.fromkeys(coupon_ids or []))  # 去重且保序
+
+    # 编辑场景：释放本订单原先占用、且本次不再选中的补送券
+    previously_used = (
+        db.query(CustomerCoupon)
+        .filter(
+            CustomerCoupon.order_id == order.id,
+            CustomerCoupon.kind == 'reissue',
+        )
+        .all()
+        if order.id is not None
+        else []
+    )
+    for coupon in previously_used:
+        if coupon.id not in wanted_ids:
+            coupon.status = 'unused'
+            coupon.used_at = None
+            coupon.order_id = None
+
+    if not wanted_ids:
+        return
+
+    # 落库拿到 order.id 以回写券的 order_id（新建订单此时尚未 flush）
+    if order not in db:
+        db.add(order)
+    db.flush()
+
+    for coupon_id in wanted_ids:
+        coupon = (
+            db.query(CustomerCoupon)
+            .filter(CustomerCoupon.id == coupon_id, CustomerCoupon.customer_id == customer.id)
+            .first()
+        )
+        if not coupon:
+            raise HTTPException(status_code=400, detail='补送券不存在或不属于当前账号')
+        if coupon.kind != 'reissue':
+            raise HTTPException(status_code=400, detail='该券不是补送券')
+        reused_on_this_order = coupon.status == 'used' and coupon.order_id == order.id
+        if coupon.status != 'unused' and not reused_on_this_order:
+            raise HTTPException(status_code=400, detail='补送券已被使用')
+        if coupon.expires_at < now:
+            raise HTTPException(status_code=400, detail='补送券已过期')
+        coupon.status = 'used'
+        coupon.used_at = now
+        coupon.order_id = order.id
 
 
 def _order_no() -> str:
@@ -201,6 +258,34 @@ def list_categories(db: Session = Depends(get_db)):
 def get_delivery_settings(db: Session = Depends(get_db)):
     threshold, fee = get_delivery_config(db)
     return DeliveryConfigOut(free_threshold=threshold, fee=fee)
+
+
+@router.get('/announcements', response_model=AnnouncementFeedOut)
+def list_announcements(
+    db: Session = Depends(get_db),
+    customer: Customer | None = Depends(get_optional_auth_customer),
+):
+    """启用中的公告（最新在前）。登录时附带该用户已读位与未读数；游客均为 0。"""
+    items = db.query(Announcement).filter(Announcement.is_active.is_(True)).order_by(Announcement.id.desc()).all()
+    last_read_id = customer.last_read_announcement_id if customer else 0
+    unread_count = sum(1 for item in items if item.id > last_read_id) if customer else 0
+    return AnnouncementFeedOut(
+        items=[AnnouncementOut.model_validate(item) for item in items],
+        last_read_id=last_read_id,
+        unread_count=unread_count,
+    )
+
+
+@router.post('/announcements/read', response_model=AnnouncementReadOut)
+def mark_announcements_read(
+    db: Session = Depends(get_db),
+    customer: Customer = Depends(get_current_customer),
+):
+    """把当前用户已读位推进到最新启用公告的 id（无公告则置 0），清除未读。"""
+    latest_id = db.query(Announcement.id).filter(Announcement.is_active.is_(True)).order_by(Announcement.id.desc()).limit(1).scalar()
+    customer.last_read_announcement_id = latest_id or 0
+    db.commit()
+    return AnnouncementReadOut(last_read_id=customer.last_read_announcement_id)
 
 
 @router.get('/fruits', response_model=list[FruitOut])
@@ -459,6 +544,8 @@ async def create_order(
     db.add(order)
     db.commit()
     db.refresh(order)
+    # 先挂载补送券，订单邮件才能带上补送商品明细供配货
+    attach_reissue_coupons(db, [order])
 
     try:
         await send_order_email(order)
@@ -467,6 +554,7 @@ async def create_order(
         order.email_notify_status = 'failed'
     db.commit()
     db.refresh(order)
+    attach_reissue_coupons(db, [order])
     return order
 
 
@@ -486,6 +574,7 @@ def get_order(
     )
     if not order:
         raise HTTPException(status_code=404, detail='Order not found')
+    attach_reissue_coupons(db, [order])
     return order
 
 
@@ -510,6 +599,7 @@ def update_order(
     _apply_order_payload(order, auth_customer, payload, db)
     db.commit()
     db.refresh(order)
+    attach_reissue_coupons(db, [order])
     return order
 
 
@@ -529,13 +619,15 @@ def my_orders(
         customer_id = db_customer.id if db_customer else customer.customer_id
     else:
         return []
-    return (
+    orders = (
         db.query(Order)
         .options(joinedload(Order.items).joinedload(OrderItem.fruit))
         .filter(Order.customer_id == customer_id)
         .order_by(Order.id.desc())
         .all()
     )
+    attach_reissue_coupons(db, orders)
+    return orders
 
 
 @router.get('/coupons/my', response_model=list[CustomerCouponOut])
