@@ -23,9 +23,34 @@ def create_access_token(subject: str) -> str:
 
 
 def decode_access_token(token: str) -> str | None:
+    """Decode access token with strict expiry check."""
+    return _decode_token(token, allow_expired=False)
+
+
+def decode_access_token_with_grace(token: str) -> str | None:
+    """Decode access token allowing tokens expired within the grace period."""
+    return _decode_token(token, allow_expired=True)
+
+
+def _decode_token(token: str, allow_expired: bool = False) -> str | None:
     try:
-        payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+        payload = jwt.decode(
+            token,
+            settings.jwt_secret_key,
+            algorithms=[settings.jwt_algorithm],
+            options={'verify_exp': not allow_expired},
+        )
         subject = payload.get('sub')
-        return str(subject) if subject else None
+        if not subject:
+            return None
+        # If we skipped expiry check, still verify it's within grace period
+        if allow_expired:
+            exp = payload.get('exp')
+            if exp is not None:
+                exp_time = datetime.fromtimestamp(exp, tz=timezone.utc)
+                grace_deadline = exp_time + timedelta(minutes=settings.jwt_refresh_grace_minutes)
+                if datetime.now(timezone.utc) > grace_deadline:
+                    return None  # Outside grace period — truly expired
+        return str(subject)
     except JWTError:
         return None

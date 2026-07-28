@@ -10,7 +10,8 @@ class Settings(BaseSettings):
     database_url: str = 'mysql+pymysql://root:password@127.0.0.1:3306/fruit_quote?charset=utf8mb4'
     jwt_secret_key: str = 'change-me-before-production'
     jwt_algorithm: str = 'HS256'
-    jwt_expire_minutes: int = 10080
+    jwt_expire_minutes: int = 43200  # 30 days — mini-program users shouldn't need frequent re-login
+    jwt_refresh_grace_minutes: int = 43200  # 过期后仍可刷新的宽限期
     upload_dir: Path = Path('uploads')
     public_base_url: str = 'http://127.0.0.1:8000'
     cors_origins: str = '*'

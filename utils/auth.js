@@ -19,7 +19,7 @@ export function hasCustomerLogin() {
   return Boolean(uni.getStorageSync('customer_token'))
 }
 
-async function exchangeLoginCode(code) {
+export async function exchangeLoginCode(code) {
   if (!code) throw new Error('微信登录未返回 code')
   const data = await request({
     url: '/auth/wechat-login',

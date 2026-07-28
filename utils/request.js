@@ -1,6 +1,6 @@
 // export const API_BASE_URL = 'https://zhiyingai.online/apigmap'
 // export const API_BASE_URL = 'http://127.0.0.1:8000/api'
-export const API_BASE_URL = 'http://192.168.71.116:8000/api'
+export const API_BASE_URL = 'http://192.168.71.24:8000/api'
 
 function getAdminToken() {
   return uni.getStorageSync('admin_token') || ''
@@ -8,6 +8,10 @@ function getAdminToken() {
 
 function getCustomerToken() {
   return uni.getStorageSync('customer_token') || ''
+}
+
+function setCustomerToken(token) {
+  uni.setStorageSync('customer_token', token)
 }
 
 function uploadErrorMessage(data, fallback) {
@@ -54,13 +58,94 @@ export async function compressUploadImage(filePath, quality = 60) {
   })
 }
 
+// ---- silent token refresh helpers ----
+
+let _refreshPromise = null
+
+async function _tryRefresh() {
+  // Deduplicate concurrent refresh calls
+  if (_refreshPromise) return _refreshPromise
+
+  _refreshPromise = (async () => {
+    try {
+      // Dynamic require to avoid circular dependency with auth.js
+      const { exchangeLoginCode } = require('./auth.js')
+      if (typeof wx === 'undefined' || !wx.login) return null
+      const code = await new Promise((resolve, reject) => {
+        wx.login({
+          success: (res) => resolve(res.code),
+          fail: (err) => reject(err),
+        })
+      })
+      if (!code) return null
+      const data = await exchangeLoginCode(code)
+      return data?.access_token || null
+    } catch {
+      return null
+    } finally {
+      _refreshPromise = null
+      // refresh complete
+    }
+  })()
+
+  return _refreshPromise
+}
+
+async function _handle401Refresh(options, admin) {
+  // Admin 401 — just clear and reject, don't try refresh
+  if (admin) {
+    uni.removeStorageSync('admin_token')
+    uni.removeStorageSync('admin_user')
+    uni.removeStorageSync('admin_permissions')
+    throw new Error('登录已过期，请重新登录')
+  }
+
+  // Already tried refreshing once — give up
+  if (options._retried) {
+    throw new Error('登录已过期，请重新登录')
+  }
+
+  // Wait on any in-flight refresh; if none, start one
+  const newToken = await _tryRefresh()
+
+  if (!newToken) {
+    throw new Error('登录已过期，请重新登录')
+  }
+
+  // Retry the original request with the new token
+  setCustomerToken(newToken)
+  const retryHeaders = { ...(options.headers || {}) }
+  retryHeaders.Authorization = `Bearer ${newToken}`
+
+  return new Promise((resolve, reject) => {
+    uni.request({
+      url: `${API_BASE_URL}${options.url}`,
+      method: options.method || 'GET',
+      data: options.data,
+      header: retryHeaders,
+      success: (res) => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve(res.data)
+          return
+        }
+        const message = res.data?.detail || res.data?.message || '请求失败'
+        reject(new Error(Array.isArray(message) ? message.map((item) => item.msg).join('；') : message))
+      },
+      fail: (err) => reject(new Error(err.errMsg || '网络连接失败')),
+    })
+  })
+}
+
+// ---- main request ----
+
 export function request(options) {
   const { url, method = 'GET', data, admin = false, headers = {} } = options
   const requestHeaders = { ...headers }
+  const isCustomerAuth = !admin && getCustomerToken()
 
   if (admin && getAdminToken()) {
     requestHeaders.Authorization = `Bearer ${getAdminToken()}`
-  } else if (!admin && getCustomerToken()) {
+  } else if (isCustomerAuth) {
     requestHeaders.Authorization = `Bearer ${getCustomerToken()}`
   }
 
@@ -70,17 +155,31 @@ export function request(options) {
       method,
       data,
       header: requestHeaders,
-      success: (res) => {
+      success: async (res) => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           resolve(res.data)
           return
         }
-        const message = res.data?.detail || res.data?.message || '请求失败'
+
+        // 401 → try silent refresh and retry once (customer only)
+        if (res.statusCode === 401 && isCustomerAuth) {
+          try {
+            const result = await _handle401Refresh({ ...options, _retried: true }, admin)
+            resolve(result)
+          } catch (refreshErr) {
+            reject(refreshErr)
+          }
+          return
+        }
+
+        // Admin 401 — clear credentials
         if (admin && res.statusCode === 401) {
           uni.removeStorageSync('admin_token')
           uni.removeStorageSync('admin_user')
           uni.removeStorageSync('admin_permissions')
         }
+
+        const message = res.data?.detail || res.data?.message || '请求失败'
         reject(new Error(Array.isArray(message) ? message.map((item) => item.msg).join('；') : message))
       },
       fail: (err) => reject(new Error(err.errMsg || '网络连接失败')),

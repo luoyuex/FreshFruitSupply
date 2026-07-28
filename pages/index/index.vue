@@ -13,6 +13,11 @@ const customer = shallowRef(null)
 const cartTotal = shallowRef(0)
 const announcementItems = shallowRef([])
 const announcementVisible = shallowRef(false)
+const verifyPosterVisible = shallowRef(false)
+
+// 认证海报：关闭后 3 天内不再弹出
+const VERIFY_POSTER_KEY = 'verify_poster_dismissed_at'
+const VERIFY_POSTER_COOLDOWN = 3 * 24 * 60 * 60 * 1000 // 3 days in ms
 
 const isVerified = computed(() => customer.value?.verification_status === 'verified')
 const showVerifyGuide = computed(() => !isVerified.value)
@@ -37,6 +42,24 @@ async function loadCustomer() {
   } catch (err) {
     customer.value = null
   }
+}
+
+function shouldShowVerifyPoster() {
+  // 已认证的不弹
+  if (isVerified.value) return false
+  const dismissed = uni.getStorageSync(VERIFY_POSTER_KEY)
+  if (!dismissed) return true
+  return Date.now() - Number(dismissed) > VERIFY_POSTER_COOLDOWN
+}
+
+function dismissVerifyPoster() {
+  verifyPosterVisible.value = false
+  uni.setStorageSync(VERIFY_POSTER_KEY, Date.now())
+}
+
+function goVerify() {
+  verifyPosterVisible.value = false
+  uni.navigateTo({ url: '/pages/verify/index' })
 }
 
 // 公告：登录用户进首页时，有未读则自动弹最新公告；关闭即标记已读
@@ -68,7 +91,7 @@ function selectCategory(category) {
   uni.switchTab({ url: '/pages/category/index' })
 }
 
-function goVerify() {
+function goToVerifyFromCard() {
   uni.navigateTo({ url: '/pages/verify/index' })
 }
 
@@ -90,15 +113,24 @@ function goCategory() {
   uni.switchTab({ url: '/pages/category/index' })
 }
 
+async function loadAndCheckPoster() {
+  await loadCustomer()
+  // Check poster after customer data is loaded —
+  // non-logged-in users (customer=null) will have isVerified=false, so poster may show
+  if (shouldShowVerifyPoster()) {
+    verifyPosterVisible.value = true
+  }
+}
+
 onMounted(() => {
   loadFruits()
-  loadCustomer()
   loadAnnouncements()
+  loadAndCheckPoster()
 })
 
 onShow(() => {
   cartTotal.value = cartCount()
-  loadCustomer()
+  loadAndCheckPoster()
 })
 
 onPullDownRefresh(async () => {
@@ -157,12 +189,12 @@ defineExpose({
       </view>
     </view>
 
-    <view v-if="showVerifyGuide" class="verify-card" @tap="goVerify">
+    <view v-if="showVerifyGuide" class="verify-card" @tap="goToVerifyFromCard">
       <view>
         <view class="verify-title">认证后享认证价</view>
         <view class="verify-sub">店铺认证通过后，下单自动按认证价预估。</view>
       </view>
-      <button class="verify-link" @tap.stop="goVerify">去认证</button>
+      <button class="verify-link" @tap.stop="goToVerifyFromCard">去认证</button>
     </view>
 
     <view class="section-head">
@@ -216,6 +248,13 @@ defineExpose({
     <float-cart :count="cartTotal" />
 
     <announcement-modal :visible="announcementVisible" :items="announcementItems" @close="closeAnnouncement" />
+
+    <verify-poster-modal
+      :visible="verifyPosterVisible"
+      poster-src="/static/poster/verify-activity.png"
+      @close="dismissVerifyPoster"
+      @go-verify="goVerify"
+    />
   </view>
 </template>
 

@@ -12,6 +12,7 @@ const customer = shallowRef(null)
 const verification = shallowRef(null)
 const resubmitMode = shallowRef(false)
 const hasLoaded = shallowRef(false)
+const posterVisible = shallowRef(false)
 
 const form = reactive({
   phone: '',
@@ -204,6 +205,7 @@ onPullDownRefresh(async () => {
     <view class="banner">
       <view class="banner-title">认证店铺信息可享超低价</view>
       <view class="banner-sub">{{ statusDesc }}</view>
+      <view class="banner-poster-link" @tap="posterVisible = true">📋 查看认证权益</view>
     </view>
 
     <view v-if="loading" class="form-card empty">正在加载认证信息...</view>
@@ -264,6 +266,13 @@ onPullDownRefresh(async () => {
     <view v-if="showForm" class="bottom-bar">
       <button class="submit" :loading="submitting" :disabled="submitting" @tap="submitVerification">{{ submitText }}</button>
     </view>
+
+    <verify-poster-modal
+      :visible="posterVisible"
+      poster-src="/static/poster/verify-activity.png"
+      @close="posterVisible = false"
+      @go-verify="posterVisible = false"
+    />
   </view>
 </template>
 
@@ -288,6 +297,13 @@ onPullDownRefresh(async () => {
 
 .banner-title { font-size: 34rpx; font-weight: 900; }
 .banner-sub { margin-top: 10rpx; font-size: 25rpx; opacity: .92; }
+.banner-poster-link {
+  margin-top: 16rpx;
+  font-size: 24rpx;
+  opacity: .85;
+  text-decoration: underline;
+  display: inline-block;
+}
 .form-card,
 .status-card {
   margin: 24rpx 26rpx 0;

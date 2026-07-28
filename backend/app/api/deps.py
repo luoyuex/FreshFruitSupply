@@ -1,7 +1,7 @@
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.core.security import decode_access_token
+from app.core.security import decode_access_token, decode_access_token_with_grace
 from app.db.session import get_db
 from app.models import Admin, Customer
 
@@ -51,7 +51,8 @@ def get_optional_auth_customer(authorization: str | None = Header(default=None),
     if not authorization or not authorization.lower().startswith('bearer '):
         return None
     token = authorization.split(' ', 1)[1]
-    subject = decode_access_token(token)
+    # Try strict decode first, then grace-period decode for recently expired tokens
+    subject = decode_access_token(token) or decode_access_token_with_grace(token)
     if not subject or not subject.startswith('customer:'):
         return None
     try:
