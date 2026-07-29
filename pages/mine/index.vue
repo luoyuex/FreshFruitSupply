@@ -5,6 +5,7 @@ import { statusLabel } from '../../utils/format.js'
 import { request } from '../../utils/request.js'
 import { hasCustomerLogin, isPlaceholderPhone, loginWithWeChat, logoutCustomer } from '../../utils/auth.js'
 import { openAdminHome } from '../../utils/admin.js'
+import { refreshCustomTabBar } from '../../utils/tabBar.js'
 
 const phone = shallowRef(uni.getStorageSync('customer_phone') || '')
 const customer = shallowRef(null)
@@ -97,6 +98,7 @@ async function ensureLogin() {
     if (!isPlaceholderPhone(data.customer?.phone)) phone.value = data.customer.phone
     loggedIn.value = true
     uni.showToast({ title: '登录成功', icon: 'success' })
+    refreshCustomTabBar()
     return true
   } catch (err) {
     uni.showToast({ title: err.message, icon: 'none' })
@@ -107,7 +109,10 @@ async function ensureLogin() {
 }
 
 async function goProfile() {
-  if (!(await ensureLogin())) return
+  if (!hasCustomerLogin()) {
+    await ensureLogin()
+    return
+  }
   uni.navigateTo({ url: '/pages/profile/detail' })
 }
 
@@ -148,6 +153,7 @@ function logout() {
       adminEntryVisible.value = false
       couponCount.value = 0
       uni.showToast({ title: '已退出', icon: 'success' })
+      refreshCustomTabBar()
     },
   })
 }
@@ -159,6 +165,7 @@ onMounted(() => {
 onShow(() => {
   loadMine()
   loadAnnouncements()
+  refreshCustomTabBar()
 })
 
 onPullDownRefresh(async () => {
@@ -281,8 +288,9 @@ defineExpose({
 <style scoped>
 .page {
   min-height: 100vh;
-  padding-bottom: 40rpx;
+  padding-bottom: calc(140rpx + env(safe-area-inset-bottom));
   background: #f3f3f3;
+  box-sizing: border-box;
 }
 
 

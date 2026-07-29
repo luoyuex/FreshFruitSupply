@@ -6,6 +6,7 @@ import { addCartItem, cartCount } from '../../utils/cart.js'
 import { fruitIcon, money, statusLabel } from '../../utils/format.js'
 import { request } from '../../utils/request.js'
 import { hasCustomerLogin } from '../../utils/auth.js'
+import { refreshCustomTabBar } from '../../utils/tabBar.js'
 
 const { loading, error, keyword, activeCategory, categoryItems, categories, visibleFruits, loadFruits } = useFruitQuotes()
 const customer = shallowRef(null)
@@ -159,6 +160,7 @@ onShow(() => {
   cartTotal.value = cartCount()
   loadCustomer()
   measureAtBottom()
+  refreshCustomTabBar()
 })
 
 onPullDownRefresh(async () => {
@@ -289,7 +291,7 @@ defineExpose({
 .page {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: calc(100vh - 110rpx - env(safe-area-inset-bottom));
   background: #f3f3f3;
 }
 

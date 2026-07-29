@@ -448,6 +448,29 @@ class CustomerAuthOut(BaseModel):
     is_phone_bound: bool
 
 
+class FrequentItemOut(BaseModel):
+    fruit_id: int
+    fruit_name: str
+    category: str
+    image_url: str | None = None
+    image_urls: List[str] = Field(default_factory=list)
+    spec: str
+    unit: str
+    stock_status: str
+    purchase_count: int
+    quote: QuoteOut | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer('image_url')
+    def serialize_image_url(self, value: str | None):
+        return to_public_url(value)
+
+    @field_serializer('image_urls')
+    def serialize_image_urls(self, value: List[str]):
+        return to_public_urls(value)
+
+
 class CustomerProfileUpdate(BaseModel):
     nickname: str | None = None
     avatar_url: str | None = None

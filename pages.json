@@ -15,6 +15,13 @@
       }
     },
     {
+      "path": "pages/frequent/index",
+      "style": {
+        "navigationBarTitleText": "常购清单",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
       "path": "pages/cart/index",
       "style": {
         "navigationBarTitleText": "购物车",
@@ -167,6 +174,7 @@
     "backgroundColor": "#f3f3f3"
   },
   "tabBar": {
+    "custom": true,
     "color": "#777777",
     "selectedColor": "#ffb000",
     "backgroundColor": "#ffffff",
@@ -183,6 +191,12 @@
         "text": "分类",
         "iconPath": "static/tabbar/category.png",
         "selectedIconPath": "static/tabbar/category-active.png"
+      },
+      {
+        "pagePath": "pages/frequent/index",
+        "text": "常购清单",
+        "iconPath": "static/tabbar/frequent.png",
+        "selectedIconPath": "static/tabbar/frequent-active.png"
       },
       {
         "pagePath": "pages/cart/index",

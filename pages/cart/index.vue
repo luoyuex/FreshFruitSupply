@@ -4,6 +4,7 @@ import { computed, ref, shallowRef } from 'vue'
 import { clearSelectedCartItems, getCartItems, removeCartItem, updateCartItem } from '../../utils/cart.js'
 import { money, statusLabel } from '../../utils/format.js'
 import { request } from '../../utils/request.js'
+import { refreshCustomTabBar } from '../../utils/tabBar.js'
 
 const items = ref([])
 const verified = shallowRef(false)
@@ -143,7 +144,10 @@ function checkout() {
   uni.navigateTo({ url: '/pages/order/create?cart=1' })
 }
 
-onShow(loadCart)
+onShow(() => {
+  loadCart()
+  refreshCustomTabBar()
+})
 
 onPullDownRefresh(() => {
   loadCart()
@@ -239,8 +243,9 @@ defineExpose({
 <style scoped>
 .page {
   min-height: 100vh;
-  padding-bottom: 188rpx;
+  padding-bottom: calc(250rpx + env(safe-area-inset-bottom));
   background: #f3f3f3;
+  box-sizing: border-box;
 }
 
 
@@ -437,7 +442,7 @@ defineExpose({
   position: fixed;
   left: 0;
   right: 0;
-  bottom: var(--window-bottom);
+  bottom: calc(110rpx + env(safe-area-inset-bottom));
   display: flex;
   align-items: center;
   justify-content: space-between;

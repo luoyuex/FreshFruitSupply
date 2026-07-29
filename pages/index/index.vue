@@ -7,6 +7,7 @@ import { request } from '../../utils/request.js'
 import { addCartItem, cartCount } from '../../utils/cart.js'
 import { hasCustomerLogin } from '../../utils/auth.js'
 import { categoryIconPath } from '../../utils/categoryIcons.js'
+import { refreshCustomTabBar } from '../../utils/tabBar.js'
 
 const { loading, error, keyword, activeCategory, categoryItems, visibleFruits, fruits, loadFruits } = useFruitQuotes()
 const customer = shallowRef(null)
@@ -131,6 +132,7 @@ onMounted(() => {
 onShow(() => {
   cartTotal.value = cartCount()
   loadAndCheckPoster()
+  refreshCustomTabBar()
 })
 
 onPullDownRefresh(async () => {
@@ -261,7 +263,7 @@ defineExpose({
 <style scoped>
 .page {
   min-height: 100vh;
-  padding: 0 26rpx 40rpx;
+  padding: 0 26rpx calc(140rpx + env(safe-area-inset-bottom));
   background: #f3f3f3;
   box-sizing: border-box;
 }

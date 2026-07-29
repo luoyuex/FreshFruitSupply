@@ -3,13 +3,14 @@ from datetime import datetime, time
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import get_current_customer, get_optional_auth_customer
 from app.db.session import get_db
 from app.models import Announcement, Customer, CustomerAddress, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, OrderItem, OrderPayment
 from app.models.domain import CHINA_TZ
-from app.schemas import AnnouncementFeedOut, AnnouncementOut, AnnouncementReadOut, CustomerAddressOut, CustomerAddressUpsert, CustomerCouponOut, CustomerOut, CustomerProfileUpdate, DeliveryConfigOut, FruitCategoryOut, FruitOut, MockPaySuccessIn, OrderCreate, OrderEditResult, OrderOut, PaymentParams, PayResponse, VerificationOut
+from app.schemas import AnnouncementFeedOut, AnnouncementOut, AnnouncementReadOut, CustomerAddressOut, CustomerAddressUpsert, CustomerCouponOut, CustomerOut, CustomerProfileUpdate, DeliveryConfigOut, FrequentItemOut, FruitCategoryOut, FruitOut, MockPaySuccessIn, OrderCreate, OrderEditResult, OrderOut, PaymentParams, PayResponse, QuoteOut, VerificationOut
 from app.services.coupon import attach_reissue_coupons, compute_discount, effective_coupon_status, grant_coupons_on_verified, release_order_coupons
 from app.services.customer import get_or_create_customer
 from app.services.settings import compute_delivery_fee, get_delivery_config
@@ -350,6 +351,48 @@ def get_fruit(fruit_id: int, db: Session = Depends(get_db)):
     if not fruit:
         raise HTTPException(status_code=404, detail='Fruit not found')
     return fruit
+
+
+@router.get('/frequent-items', response_model=list[FrequentItemOut])
+def list_frequent_items(
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    auth_customer: Customer = Depends(get_current_customer),
+):
+    """当前用户历史订单中购买总数量最多的商品，按购买次数降序。"""
+    rows = (
+        db.query(
+            Fruit,
+            func.sum(OrderItem.quantity).label('purchase_count'),
+        )
+        .join(OrderItem, OrderItem.fruit_id == Fruit.id)
+        .join(Order, Order.id == OrderItem.order_id)
+        .options(joinedload(Fruit.quote))
+        .filter(
+            Order.customer_id == auth_customer.id,
+            Order.status.in_(['pending', 'confirmed', 'delivering', 'completed']),
+        )
+        .group_by(Fruit.id)
+        .order_by(func.sum(OrderItem.quantity).desc())
+        .limit(limit)
+        .all()
+    )
+
+    result: list[FrequentItemOut] = []
+    for fruit, purchase_count in rows:
+        result.append(FrequentItemOut(
+            fruit_id=fruit.id,
+            fruit_name=fruit.name,
+            category=fruit.category,
+            image_url=fruit.image_url,
+            image_urls=fruit.image_urls,
+            spec=fruit.spec,
+            unit=fruit.unit,
+            stock_status=fruit.stock_status,
+            purchase_count=int(purchase_count),
+            quote=QuoteOut.model_validate(fruit.quote) if fruit.quote else None,
+        ))
+    return result
 
 
 @router.get('/customers/me', response_model=CustomerOut)
