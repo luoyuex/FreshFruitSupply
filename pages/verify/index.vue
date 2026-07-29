@@ -22,31 +22,27 @@ const form = reactive({
 })
 
 const isVerifiedCustomer = computed(() => customer.value?.verification_status === 'verified')
-const hasPendingChange = computed(() => isVerifiedCustomer.value && verification.value?.status === 'pending_review')
-const hasRejectedChange = computed(() => isVerifiedCustomer.value && verification.value?.status === 'rejected')
 const verificationStatus = computed(() => {
   if (isVerifiedCustomer.value && !resubmitMode.value) return 'verified'
   return verification.value?.status || customer.value?.verification_status || 'unverified'
 })
+const canResubmit = computed(() => ['revoked', 'rejected'].includes(verificationStatus.value))
 const showForm = computed(() => {
   if (isVerifiedCustomer.value) return resubmitMode.value
-  return verificationStatus.value === 'unverified' || (verificationStatus.value === 'rejected' && resubmitMode.value)
+  return verificationStatus.value === 'unverified' || (canResubmit.value && resubmitMode.value)
 })
 const showStatusCard = computed(() => verificationStatus.value !== 'unverified' && !showForm.value)
 const statusTitle = computed(() => {
-  if (hasPendingChange.value) return '资料修改待审核'
   if (verificationStatus.value === 'verified') return '店铺已认证'
-  if (verificationStatus.value === 'pending_review') return '认证待审核'
-  if (verificationStatus.value === 'rejected') return '认证未通过'
+  if (canResubmit.value) return '认证已取消'
+  if (verificationStatus.value === 'pending_review') return '请重新提交认证'
   return '提交店铺认证'
 })
 const statusDesc = computed(() => {
-  if (hasPendingChange.value) return '新的认证资料已提交审核，审核期间当前店铺仍保持已认证。'
-  if (hasRejectedChange.value) return '认证资料已通过审核，上次修改未通过，可重新提交修改。'
-  if (verificationStatus.value === 'verified') return '认证资料已通过审核，订货时会自动使用认证优惠价。'
-  if (verificationStatus.value === 'pending_review') return '资料已提交，供应商审核前无需重复提交。'
-  if (verificationStatus.value === 'rejected') return '请查看审核备注，修改资料后可以重新提交认证。'
-  return '上传门店/档口图片，人工审核后解锁认证优惠价。'
+  if (verificationStatus.value === 'verified') return '店铺认证已完成，订货时会自动使用认证优惠价。'
+  if (canResubmit.value) return '认证资格已取消，请确认资料后重新认证。'
+  if (verificationStatus.value === 'pending_review') return '请重新提交店铺认证资料。'
+  return '填写店铺资料并上传门店图片，完成认证后可享认证优惠价。'
 })
 const displayInfo = computed(() => {
   const source = isVerifiedCustomer.value ? (customer.value || {}) : (verification.value || customer.value || {})
@@ -58,7 +54,7 @@ const displayInfo = computed(() => {
 })
 const submitText = computed(() => {
   if (isVerifiedCustomer.value) return '提交修改'
-  return verificationStatus.value === 'rejected' ? '重新提交' : '立即认证'
+  return canResubmit.value ? '重新认证' : '立即认证'
 })
 
 function hydrateForm(source = {}, force = false) {
@@ -162,6 +158,7 @@ async function submitVerification() {
     return
   }
   submitting.value = true
+  const wasVerified = isVerifiedCustomer.value
   try {
     await ensureLogin()
     uni.setStorageSync('customer_phone', form.phone)
@@ -178,8 +175,8 @@ async function submitVerification() {
     imagePath.value = ''
     await loadVerification()
     uni.showModal({
-      title: isVerifiedCustomer.value ? '已提交修改' : '已提交认证',
-      content: isVerifiedCustomer.value ? '修改资料已提交审核，审核通过后会更新认证资料；审核期间不影响认证优惠价。' : '认证状态为待审核，供应商审核通过后即可享受优惠价。',
+      title: wasVerified ? '资料已更新' : '认证成功',
+      content: wasVerified ? '认证资料已更新，后续订货将使用最新资料。' : '店铺认证已完成，现在下单可享认证优惠价。',
       showCancel: false,
     })
   } catch (err) {
@@ -224,21 +221,18 @@ onPullDownRefresh(async () => {
         <view class="info-row"><text>手机号</text><strong>{{ displayInfo.phone || '-' }}</strong></view>
         <view class="info-row"><text>经营类型</text><strong>{{ displayInfo.business_type || '-' }}</strong></view>
       </view>
-      <view v-if="hasPendingChange" class="review-note">新的认证资料正在审核中，审核通过后会更新展示资料。</view>
-      <view v-if="hasRejectedChange && verification?.review_note" class="review-note">上次修改未通过：{{ verification.review_note }}</view>
-      <view v-if="!isVerifiedCustomer && verification?.review_note" class="review-note">审核备注：{{ verification.review_note }}</view>
+      <view v-if="!isVerifiedCustomer && verification?.review_note" class="review-note">取消原因：{{ verification.review_note }}</view>
       <view v-if="verification?.image_urls?.length" class="history-images">
         <image v-for="url in verification.image_urls" :key="url" class="history-image" :src="url" mode="aspectFill" @tap="preview(verification.image_urls, url)" />
       </view>
-      <button v-if="verificationStatus === 'rejected' && !isVerifiedCustomer" class="resubmit" @tap="startResubmit">重新提交认证</button>
-      <button v-if="isVerifiedCustomer && !hasPendingChange" class="resubmit" @tap="startResubmit">修改认证资料</button>
-      <button v-if="hasPendingChange" class="resubmit disabled" disabled>修改审核中</button>
+      <button v-if="canResubmit && !isVerifiedCustomer" class="resubmit" @tap="startResubmit">重新认证</button>
+      <button v-if="isVerifiedCustomer" class="resubmit" @tap="startResubmit">修改认证资料</button>
     </view>
 
     <template v-if="!loading && showForm">
-      <view v-if="isVerifiedCustomer || verificationStatus === 'rejected'" class="status-card small" :class="isVerifiedCustomer ? 'verified' : 'rejected'">
-        <view class="status-title">{{ isVerifiedCustomer ? '修改认证资料' : '认证未通过' }}</view>
-        <view class="status-sub">{{ isVerifiedCustomer ? '请提交新的店铺资料和图片，审核通过后会更新认证资料。' : (verification?.review_note || '请修改认证资料后重新提交。') }}</view>
+      <view v-if="isVerifiedCustomer || canResubmit" class="status-card small" :class="isVerifiedCustomer ? 'verified' : 'revoked'">
+        <view class="status-title">{{ isVerifiedCustomer ? '修改认证资料' : '重新认证' }}</view>
+        <view class="status-sub">{{ isVerifiedCustomer ? '提交后将直接更新认证资料。' : (verification?.review_note || '请确认店铺资料后重新提交认证。') }}</view>
         <button class="cancel" @tap="cancelResubmit">取消</button>
       </view>
 
@@ -319,14 +313,14 @@ onPullDownRefresh(async () => {
 .status-card { border: 2rpx solid transparent; }
 .status-card.pending_review { border-color: #ffd06b; background: #fffaf0; }
 .status-card.verified { border-color: #c7e8b9; background: #f5fff0; }
-.status-card.rejected { border-color: #fecaca; background: #fff7f7; }
+.status-card.revoked, .status-card.rejected { border-color: #fecaca; background: #fff7f7; }
 .status-card.small { padding-bottom: 22rpx; }
 .status-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18rpx; }
 .status-title { color: #173b16; font-size: 36rpx; font-weight: 900; }
 .status-sub { margin-top: 10rpx; color: #60715c; font-size: 26rpx; line-height: 1.5; }
 .status-badge { flex-shrink: 0; padding: 8rpx 16rpx; border-radius: 999rpx; color: #fff; background: #ffb700; font-size: 24rpx; font-weight: 900; }
 .status-card.verified .status-badge { background: #2f6b23; }
-.status-card.rejected .status-badge { background: #ef4444; }
+.status-card.revoked .status-badge, .status-card.rejected .status-badge { background: #ef4444; }
 .info-grid { margin-top: 24rpx; border-top: 1rpx solid rgba(96, 113, 92, .16); }
 .info-row { display: flex; justify-content: space-between; gap: 20rpx; padding: 18rpx 0; border-bottom: 1rpx solid rgba(96, 113, 92, .12); color: #60715c; font-size: 26rpx; }
 .info-row strong { flex: 1; text-align: right; color: #173b16; }

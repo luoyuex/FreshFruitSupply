@@ -13,7 +13,7 @@ from app.core.security import create_access_token, hash_password, verify_passwor
 from app.db.session import get_db
 from app.models import Admin, Announcement, CouponTemplate, Customer, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, PriceQuote
 from app.schemas import AdminAuthOut, AdminEntryVisibleOut, AdminLogin, AdminOut, AdminPasswordUpdate, AdminUpsert, AnnouncementOut, AnnouncementUpsert, CouponGrantIn, CouponTemplateOut, CouponTemplateUpsert, CustomerAdminOut, CustomerCouponOut, DeliveryConfigOut, DeliveryConfigUpdate, FruitCategoryOut, FruitCategoryUpsert, FruitOut, FruitUpsert, OrderBulkStatusUpdate, OrderOut, OrderStatusUpdate, SalesStatsOut, VerificationReview
-from app.services.coupon import attach_reissue_coupons, effective_coupon_status, grant_coupon_to_customer, grant_coupons_on_verified
+from app.services.coupon import attach_reissue_coupons, effective_coupon_status, grant_coupon_to_customer
 from app.services.order_maintenance import cancel_order
 from app.services.settings import DELIVERY_FEE_KEY, DELIVERY_FREE_THRESHOLD_KEY, get_delivery_config, set_setting
 from app.services.upload import save_upload, to_public_url, to_public_urls, to_storage_path, to_storage_paths
@@ -304,7 +304,19 @@ def list_verifications(
     db: Session = Depends(get_db),
     _: Admin = Depends(require_admin_permission('verifications')),
 ):
-    query = db.query(CustomerVerification).order_by(CustomerVerification.id.desc())
+    latest = (
+        db.query(
+            CustomerVerification.customer_id.label('customer_id'),
+            sa_func.max(CustomerVerification.id).label('verification_id'),
+        )
+        .group_by(CustomerVerification.customer_id)
+        .subquery()
+    )
+    query = (
+        db.query(CustomerVerification)
+        .join(latest, CustomerVerification.id == latest.c.verification_id)
+        .order_by(CustomerVerification.id.desc())
+    )
     if status:
         query = query.filter(CustomerVerification.status == status)
     return [_verification_payload(item) for item in query.all()]
@@ -363,7 +375,7 @@ def update_category(
 
 
 @router.patch('/verifications/{verification_id}')
-def review_verification(
+def update_verification(
     verification_id: int,
     payload: VerificationReview,
     db: Session = Depends(get_db),
@@ -373,18 +385,19 @@ def review_verification(
     if not verification:
         raise HTTPException(status_code=404, detail='Verification not found')
 
-    verification.status = payload.status
-    verification.review_note = payload.review_note
+    latest_id = (
+        db.query(sa_func.max(CustomerVerification.id))
+        .filter(CustomerVerification.customer_id == verification.customer_id)
+        .scalar()
+    )
+    if verification.id != latest_id or verification.status != 'verified':
+        raise HTTPException(status_code=400, detail='只能取消客户当前有效的认证')
+
+    verification.status = 'revoked'
+    verification.review_note = payload.review_note or '认证资料需要重新提交'
     customer = db.query(Customer).filter(Customer.id == verification.customer_id).first()
     if customer:
-        if payload.status == 'verified':
-            customer.verification_status = 'verified'
-            customer.shop_name = verification.shop_name
-            customer.contact_name = verification.contact_name
-            customer.business_type = verification.business_type
-            grant_coupons_on_verified(db, customer)
-        elif customer.verification_status != 'verified':
-            customer.verification_status = 'rejected'
+        customer.verification_status = 'unverified'
     db.commit()
     db.refresh(verification)
     return _verification_payload(verification)

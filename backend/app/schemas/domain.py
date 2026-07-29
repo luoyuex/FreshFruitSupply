@@ -149,7 +149,7 @@ class VerificationOut(BaseModel):
 
 
 class VerificationReview(BaseModel):
-    status: str = Field(pattern='^(verified|rejected)$')
+    status: str = Field(pattern='^revoked$')
     review_note: str | None = None
 
 

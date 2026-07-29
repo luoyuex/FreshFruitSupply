@@ -20,7 +20,7 @@ from app.services.wechatpay import create_jsapi_payment, generate_out_trade_no, 
 from app.services.order_maintenance import cancel_order
 
 router = APIRouter()
-ORDER_EDIT_CUTOFF = time(22, 30)
+ORDER_EDIT_CUTOFF = time(22, 0)
 EDITABLE_ORDER_STATUSES = {'pending', 'confirmed'}
 
 
@@ -32,7 +32,7 @@ def _assert_order_editable(order: Order) -> None:
     if order.status not in EDITABLE_ORDER_STATUSES:
         raise HTTPException(status_code=400, detail='Order cannot be edited in current status')
     if not _is_before_order_edit_cutoff():
-        raise HTTPException(status_code=400, detail='Orders cannot be edited after 22:30')
+        raise HTTPException(status_code=400, detail='每日22:00后不能修改订单')
 
 
 def _apply_order_payload(order: Order, customer: Customer, payload: OrderCreate, db: Session) -> None:
@@ -578,16 +578,6 @@ async def submit_verification(
         customer = _attach_phone_to_customer(db, auth_customer, phone)
     else:
         customer = get_or_create_customer(db, phone=phone, wechat_openid=wechat_openid)
-    pending_verification = (
-        db.query(CustomerVerification)
-        .filter(
-            CustomerVerification.customer_id == customer.id,
-            CustomerVerification.status == 'pending_review',
-        )
-        .first()
-    )
-    if pending_verification or customer.verification_status == 'pending_review':
-        raise HTTPException(status_code=400, detail='认证审核中，请勿重复提交')
     image_urls = [await save_upload(image, 'customer-verifications') for image in images]
 
     verification = CustomerVerification(
@@ -597,14 +587,14 @@ async def submit_verification(
         phone=phone,
         business_type=business_type,
         image_urls=json.dumps(image_urls, ensure_ascii=False),
-        status='pending_review',
+        status='verified',
     )
-    if customer.verification_status != 'verified':
-        customer.verification_status = 'pending_review'
-        customer.shop_name = shop_name
-        customer.contact_name = contact_name
-        customer.business_type = business_type
+    customer.verification_status = 'verified'
+    customer.shop_name = shop_name
+    customer.contact_name = contact_name
+    customer.business_type = business_type
     db.add(verification)
+    grant_coupons_on_verified(db, customer)
     db.commit()
     db.refresh(verification)
     return _verification_payload(verification)

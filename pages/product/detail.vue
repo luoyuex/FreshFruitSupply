@@ -175,7 +175,7 @@ defineExpose({
       <view class="section-title">商品说明</view>
       <view class="detail-line">起订量：{{ fruit?.quote?.min_order_quantity || 1 }}{{ fruit?.unit || '' }}</view>
       <view class="detail-line">价格说明：行情波动较快，每日价格可能会有调整。</view>
-      <view class="detail-line">商品备注：{{ fruit?.quote?.note || '支持批发，会在第二天12点前送到您的地址。' }}</view>
+      <view class="detail-line">商品备注：{{ fruit?.quote?.note || '支持批发，每天22:00前下单，次日10:00前送达。' }}</view>
     </view>
 
     <view v-if="detailImageUrls.length" class="image-detail-card">

@@ -518,7 +518,7 @@ async function submitEditOrder() {
   if (!result.need_payment) {
     uni.showModal({
       title: '订单已修改',
-      content: '订单修改已保存，22:30后将不能再修改。',
+      content: '订单修改已保存，今日22:00后不能再修改。',
       showCancel: false,
       success: () => uni.switchTab({ url: '/pages/mine/index' }),
     })
@@ -609,7 +609,13 @@ onPullDownRefresh(async () => {
 <template>
   <view class="page">
 
-    <view class="tip-strip">{{ isEditMode ? '订单可在每天22:30前修改（只能增加商品，加量需补差价）。' : '请核对订单后完成微信支付，支付成功才算下单，超时未付将自动关闭。' }}</view>
+    <view class="delivery-promise">
+      <image class="delivery-promise-icon" :src="isEditMode ? '/static/icons/clock-3.svg' : '/static/icons/truck.svg'" mode="aspectFit" />
+      <view class="delivery-promise-copy">
+        <view class="delivery-promise-title">{{ isEditMode ? '订单修改截止：每日22:00' : '22:00前下单，次日10:00前送达' }}</view>
+        <view class="delivery-promise-desc">{{ isEditMode ? '仅可增加商品和数量，增加金额需补差价。' : '支付成功才算下单；已付款订单当日22:00前可修改。' }}</view>
+      </view>
+    </view>
 
     <view class="card">
       <view class="card-title-row">
@@ -826,11 +832,38 @@ onPullDownRefresh(async () => {
 
 
 
-.tip-strip {
-  padding: 24rpx 36rpx;
-  color: #ff5a00;
-  background: #fff2df;
-  font-size: 27rpx;
+.delivery-promise {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+  padding: 24rpx 30rpx;
+  border-top: 1rpx solid #ffe0a3;
+  border-bottom: 1rpx solid #ffe0a3;
+  background: #fff5df;
+}
+
+.delivery-promise-icon {
+  flex: 0 0 auto;
+  width: 46rpx;
+  height: 46rpx;
+}
+
+.delivery-promise-copy {
+  min-width: 0;
+}
+
+.delivery-promise-title {
+  color: #9b4b00;
+  font-size: 30rpx;
+  font-weight: 900;
+  line-height: 1.4;
+}
+
+.delivery-promise-desc {
+  margin-top: 5rpx;
+  color: #8a6840;
+  font-size: 24rpx;
+  line-height: 1.5;
 }
 
 .card {

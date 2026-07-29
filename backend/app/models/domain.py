@@ -66,7 +66,7 @@ class CustomerVerification(TimestampMixin, Base):
     phone: Mapped[str] = mapped_column(String(32), index=True)
     business_type: Mapped[str] = mapped_column(String(80))
     image_urls: Mapped[str] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(32), default='pending_review', index=True)
+    status: Mapped[str] = mapped_column(String(32), default='verified', index=True)
     review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     customer: Mapped[Customer] = relationship(back_populates='verifications')
@@ -184,10 +184,10 @@ class Order(TimestampMixin, Base):
 
     @property
     def can_edit(self) -> bool:
-        # 已付款待确认/已确认的订单可在 22:30 前编辑（编辑只增不减，加量走补差价）。
+        # 已付款待确认/已确认的订单可在 22:00 前编辑（编辑只增不减，加量走补差价）。
         # 待支付订单不走编辑入口，应先完成支付。
         now = datetime.now(CHINA_TZ).time()
-        return self.status in {'pending', 'confirmed'} and now < time(22, 30)
+        return self.status in {'pending', 'confirmed'} and now < time(22, 0)
 
 
 class OrderItem(Base):

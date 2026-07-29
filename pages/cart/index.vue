@@ -21,6 +21,19 @@ const total = computed(() => selectedItems.value.reduce((sum, item) => {
 async function loadCart() {
   managing.value = false
   items.value = getCartItems()
+  verified.value = uni.getStorageSync('verification_status') === 'verified'
+
+  // 后台可能已取消认证，进入购物车时同步最新状态，避免继续展示认证价。
+  if (uni.getStorageSync('customer_token')) {
+    try {
+      const customer = await request({ url: '/customers/me' })
+      const verificationStatus = customer?.verification_status || 'unverified'
+      uni.setStorageSync('verification_status', verificationStatus)
+      verified.value = verificationStatus === 'verified'
+    } catch (err) {
+      // 网络异常时暂时保留本地状态，下单时仍以后端价格为准。
+    }
+  }
 
   // 获取最新商品状态
   if (items.value.length > 0) {
@@ -63,8 +76,6 @@ async function loadCart() {
       loading.value = false
     }
   }
-
-  verified.value = uni.getStorageSync('verification_status') === 'verified'
 }
 
 function itemImage(item) {

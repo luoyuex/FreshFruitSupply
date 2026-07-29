@@ -20,6 +20,7 @@ const activeStatus = shallowRef('')
 const loading = shallowRef(false)
 const loginChecked = shallowRef(false)
 const paying = shallowRef(false)
+const afterSaleVisible = shallowRef(false)
 
 const filteredOrders = computed(() => {
   if (!activeStatus.value) return orders.value
@@ -62,11 +63,11 @@ function switchStatus(status) {
 }
 
 function orderEditReason(order) {
-  if (order.can_edit) return '每天22:30前可修改'
+  if (order.can_edit) return '每天22:00前可修改'
   if (order.status === 'delivering') return '订单配送中，不能修改'
   if (order.status === 'completed') return '订单已完成，不能修改'
   if (order.status === 'cancelled') return '订单已取消，不能修改'
-  return '已过22:30，不能修改'
+  return '已过22:00，不能修改'
 }
 
 function editOrder(order) {
@@ -121,6 +122,14 @@ function canCancel(order) {
 
 function goBuy() {
   uni.switchTab({ url: '/pages/category/index' })
+}
+
+function openAfterSale() {
+  afterSaleVisible.value = true
+}
+
+function closeAfterSale() {
+  afterSaleVisible.value = false
 }
 
 function addressText(order) {
@@ -195,10 +204,13 @@ onPullDownRefresh(async () => {
         <view class="order-actions">
           <button v-if="canCancel(order)" class="cancel-order" @tap="cancelOrder(order)">取消订单</button>
           <button v-if="order.status === 'unpaid'" class="pay-order" :loading="paying" :disabled="paying" @tap="payOrderNow(order)">去支付</button>
-          <button v-else class="edit-order" :class="{ disabled: !order.can_edit }" @tap="editOrder(order)">修改订单</button>
+          <button v-else-if="order.status !== 'completed'" class="edit-order" :class="{ disabled: !order.can_edit }" @tap="editOrder(order)">修改订单</button>
+          <button v-if="order.status === 'completed'" class="after-sale-btn" @tap="openAfterSale">售后</button>
         </view>
       </view>
     </view>
+
+    <after-sale-modal :visible="afterSaleVisible" @close="closeAfterSale" />
   </view>
 </template>
 
@@ -419,6 +431,21 @@ onPullDownRefresh(async () => {
 
 .cancel-order::after,
 .pay-order::after {
+  border: none;
+}
+
+.after-sale-btn {
+  width: 168rpx;
+  height: 62rpx;
+  line-height: 62rpx;
+  border-radius: 999rpx;
+  color: #fff;
+  background: #2f6b23;
+  font-size: 24rpx;
+  font-weight: 900;
+}
+
+.after-sale-btn::after {
   border: none;
 }
 </style>

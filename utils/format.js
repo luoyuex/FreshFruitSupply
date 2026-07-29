@@ -19,6 +19,7 @@ export function statusLabel(status) {
     pending_review: '待审核',
     verified: '已认证',
     rejected: '未通过',
+    revoked: '已取消',
     failed: '邮件失败',
     sent: '已通知',
     unused: '未使用',

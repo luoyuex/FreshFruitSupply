@@ -15,6 +15,7 @@ const loggedIn = shallowRef(hasCustomerLogin())
 const adminEntryVisible = shallowRef(false)
 const couponCount = shallowRef(0)
 const announcementUnread = shallowRef(0)
+const afterSaleVisible = shallowRef(false)
 
 const isLoggedIn = computed(() => loggedIn.value)
 const displayName = computed(() => {
@@ -137,6 +138,14 @@ async function goCoupons() {
 
 function goAgreement() {
   uni.navigateTo({ url: '/pages/agreement/index' })
+}
+
+function openAfterSale() {
+  afterSaleVisible.value = true
+}
+
+function closeAfterSale() {
+  afterSaleVisible.value = false
 }
 
 function logout() {
@@ -267,7 +276,13 @@ defineExpose({
         <image class="tool-icon" src="/static/icons/file-text-dark.svg" mode="aspectFit" />
         <text>用户协议</text>
       </view>
+      <view class="tool" @tap="openAfterSale">
+        <image class="tool-icon" src="/static/icons/user-round.svg" mode="aspectFit" />
+        <text>联系客服</text>
+      </view>
     </view>
+
+    <after-sale-modal :visible="afterSaleVisible" @close="closeAfterSale" />
 
     <view v-if="adminEntryVisible" class="admin-card" @tap="goAdmin">
       <image class="admin-icon" src="/static/icons/store-backend.svg" mode="aspectFit" />
@@ -492,7 +507,7 @@ defineExpose({
 
 .tool-card {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   padding: 38rpx 10rpx 40rpx;
 }
 

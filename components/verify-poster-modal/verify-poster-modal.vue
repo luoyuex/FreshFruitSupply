@@ -32,7 +32,7 @@ function onGoVerify() {
         <view v-else class="poster-placeholder">
           <text class="placeholder-icon">🎉</text>
           <text class="placeholder-title">认证店铺享超低价</text>
-          <text class="placeholder-desc">上传门店资料，审核通过后即可享受认证优惠价</text>
+          <text class="placeholder-desc">上传门店资料，完成认证后即可享受认证优惠价</text>
         </view>
         <view class="close-btn" @tap="onClose">✕</view>
       </view>
