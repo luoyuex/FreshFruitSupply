@@ -53,14 +53,24 @@ Change it before production.
 
 ### 切真实支付前需要准备
 
-1. 微信支付商户号，并完成小程序 appid（`WECHAT_APPID`）与商户号的绑定；
-2. 商户 API 证书（`apiclient_key.pem` + 证书序列号），私钥放服务器安全路径，不要提交进仓库；
-3. APIv3 密钥；
-4. 公网可访问的 HTTPS 回调地址（支付与退款），微信商户平台配置后填入 `WECHAT_PAY_NOTIFY_URL` /
+支付涉及三组互不相同的凭证，不要混淆：
+
+1. **商户号 `mchid`**：所有接口都要传，并需在商户平台完成小程序 appid（`WECHAT_APPID`）与商户号的绑定；
+2. **商户 API 证书**：`apiclient_key.pem`（私钥，只用于给发往微信的请求签名）+ 商户 API 证书序列号
+   （`WECHAT_PAY_CERT_SERIAL`，Authorization 头的 `serial_no`）。私钥放服务器安全路径，不要提交进仓库；
+3. **APIv3 密钥**（`WECHAT_PAY_API_V3_KEY`）：32 位，仅用于解密回调密文中的 `resource`。
+
+回调验签凭证二选一（同一商户号只能选一种，灰度期间可能混用，代码同时支持）：
+
+- **微信支付公钥模式（推荐）**：商户平台下载 `pub_key.pem` 并记下公钥 ID（形如 `PUB_KEY_ID_0114xxx`），
+  填入 `WECHAT_PAY_PUBLIC_KEY_PATH` 与 `WECHAT_PAY_PUBLIC_KEY_ID`。公钥长期有效，无需轮换；
+- **平台证书模式**：不填公钥配置，代码会调用 `/v3/certificates` 下载平台证书并缓存 6 小时，自动处理轮换。
+
+其余准备：
+
+4. 公网可访问的 HTTPS 回调地址（支付与退款），填入 `WECHAT_PAY_NOTIFY_URL` /
    `WECHAT_PAY_REFUND_NOTIFY_URL`（后者可选，不填则退款按「受理成功」记账）；
 5. 把 `.env` 中的 `WECHAT_PAY_MOCK` 改为 `false`，按 `.env.example` 补齐其余支付配置。
-
-回调依赖 `cryptography` 下载并缓存微信平台证书做验签（缓存 6 小时，自动处理证书轮换）。
 
 ### 上线前自查
 

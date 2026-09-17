@@ -1,6 +1,6 @@
 // export const API_BASE_URL = 'https://zhiyingai.online/apigmap'
-// export const API_BASE_URL = 'http://127.0.0.1:8000/api'
-export const API_BASE_URL = 'http://192.168.3.86:8888/api'
+export const API_BASE_URL = 'https://zhenguolian.cn/api'
+// export const API_BASE_URL = 'http://192.168.3.86:8888/api'
 
 function getAdminToken() {
   return uni.getStorageSync('admin_token') || ''

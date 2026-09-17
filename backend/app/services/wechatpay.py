@@ -8,8 +8,12 @@
 - create_jsapi_payment(payment, openid): 统一下单，返回小程序 uni.requestPayment 所需参数
 - query_order(out_trade_no): 主动查单，回调丢失时用它兜底对账
 - close_order(out_trade_no): 关闭微信侧预支付单，本地关单时同步调用，避免关单后仍能付款
-- verify_and_parse_notify(headers, body): 平台证书验签 + 解密支付/退款结果回调
+- verify_and_parse_notify(headers, body): 验签 + 解密支付/退款结果回调
 - refund(payment): 按流水原路退款
+
+验签凭证支持微信支付的两种模式（同一商户号二选一，灰度期间可能混用）：
+- 微信支付公钥模式：Wechatpay-Serial 携带公钥 ID（PUB_KEY_ID_ 前缀），用本地 pub_key.pem 验签；
+- 平台证书模式：Wechatpay-Serial 为平台证书序列号，先从 /v3/certificates 下载平台证书再验签。
 
 金额在数据库以「元」为 Decimal 存储，微信 API 以「分」为整型交互，转换集中在本模块。
 """
@@ -19,6 +23,7 @@ import json
 import time
 import uuid
 from decimal import Decimal, ROUND_HALF_UP
+from pathlib import Path
 
 from fastapi import HTTPException
 
@@ -63,6 +68,12 @@ def _ensure_pay_config() -> None:
     ]
     if missing:
         raise HTTPException(status_code=500, detail=f'WeChat Pay is not configured: {", ".join(missing)}')
+    # 公钥模式的公钥ID与公钥文件必须成对配置，否则回调验签无法匹配
+    if bool(settings.wechat_pay_public_key_id) != bool(settings.wechat_pay_public_key_path):
+        raise HTTPException(
+            status_code=500,
+            detail='WECHAT_PAY_PUBLIC_KEY_ID and WECHAT_PAY_PUBLIC_KEY_PATH must be configured together',
+        )
 
 
 # --------------------------------------------------------------------------
@@ -256,11 +267,26 @@ def _real_verify_and_parse_notify(headers: dict, body: bytes) -> dict:
 
 
 # --------------------------------------------------------------------------
-# 平台证书：回调验签用。微信平台证书会轮换，按序列号缓存 6 小时
+# 验签公钥：优先微信支付公钥（本地读取），回退平台证书（联网下载并缓存）
 # --------------------------------------------------------------------------
 PLATFORM_CERT_CACHE_SECONDS = 6 * 3600
 _platform_certs: dict[str, object] = {}
 _platform_certs_expire_at = 0.0
+_public_key_cache: object | None = None
+
+
+def _load_public_key():
+    """加载微信支付公钥（pub_key.pem），进程内缓存。公钥长期有效，无需刷新。"""
+    global _public_key_cache
+    if _public_key_cache is None:
+        from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
+        try:
+            pem = Path(settings.wechat_pay_public_key_path).read_bytes()
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f'Cannot read WeChat Pay public key: {exc}') from exc
+        _public_key_cache = load_pem_public_key(pem)
+    return _public_key_cache
 
 
 def _invalidate_platform_certs() -> None:
@@ -305,8 +331,23 @@ def _notify_header(headers: dict, name: str) -> str:
     return ''
 
 
+def _public_key_for_serial(serial: str):
+    """按 Wechatpay-Serial 取验签公钥：先匹配配置的微信支付公钥 ID，再回退平台证书。
+
+    灰度切换期间微信会按比例随机用公钥或平台证书签名，故两种都保留。
+    """
+    if settings.wechat_pay_public_key_id and serial == settings.wechat_pay_public_key_id:
+        return _load_public_key()
+    public_key = _platform_public_keys().get(serial)
+    if public_key is None:
+        # 序列号未知多为平台证书轮换：清缓存重拉一次再试
+        _invalidate_platform_certs()
+        public_key = _platform_public_keys().get(serial)
+    return public_key
+
+
 def _verify_notify_signature(headers: dict, body: bytes) -> None:
-    """用平台证书公钥验 RSA-SHA256 签名，并拒绝超过 5 分钟的回调以防重放。"""
+    """用微信支付公钥或平台证书公钥验 RSA-SHA256 签名，并拒绝超过 5 分钟的回调以防重放。"""
     import base64
 
     from cryptography.exceptions import InvalidSignature
@@ -326,13 +367,9 @@ def _verify_notify_signature(headers: dict, body: bytes) -> None:
     if expired:
         raise HTTPException(status_code=401, detail='WeChat Pay notify timestamp expired')
 
-    public_key = _platform_public_keys().get(serial)
+    public_key = _public_key_for_serial(serial)
     if public_key is None:
-        # 序列号未知多为平台证书轮换：清缓存重拉一次再试
-        _invalidate_platform_certs()
-        public_key = _platform_public_keys().get(serial)
-    if public_key is None:
-        raise HTTPException(status_code=401, detail='Unknown WeChat Pay platform certificate serial')
+        raise HTTPException(status_code=401, detail=f'Unknown WeChat Pay public key id or cert serial: {serial}')
 
     message = f'{timestamp}\n{nonce}\n{body.decode("utf-8")}\n'
     try:

@@ -27,7 +27,12 @@ class Settings(BaseSettings):
     wechat_mchid: str = ''
     wechat_pay_api_v3_key: str = ''
     wechat_pay_cert_serial: str = ''
+    # 商户 API 证书私钥（apiclient_key.pem）路径，用于给发往微信的请求签名
     wechat_pay_private_key_path: str = ''
+    # 微信支付公钥（pub_key.pem）路径与其公钥 ID（PUB_KEY_ID_ 前缀），用于回调验签
+    # 与平台证书模式二选一；两者都配则优先用公钥，未配时回退平台证书
+    wechat_pay_public_key_path: str = ''
+    wechat_pay_public_key_id: str = ''
     wechat_pay_notify_url: str = ''
     # 退款结果回调地址（可选）；不填则退款按“受理成功”直接记账
     wechat_pay_refund_notify_url: str = ''

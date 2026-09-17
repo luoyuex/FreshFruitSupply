@@ -102,9 +102,10 @@ sudo -u fruitapp /srv/fruitquote/backend/.venv/bin/pip install -r /srv/fruitquot
 sudo -u fruitapp install -m 600 /srv/fruitquote/backend/.env.example /srv/fruitquote/backend/.env
 sudo -u fruitapp vi /srv/fruitquote/backend/.env
 
-# 支付私钥单独存放，600 权限
+# 支付私钥与公钥单独存放，600 权限
 sudo -u fruitapp mkdir -m 700 /srv/fruitquote/backend/certs
 sudo -u fruitapp install -m 600 apiclient_key.pem /srv/fruitquote/backend/certs/
+sudo -u fruitapp install -m 600 pub_key.pem /srv/fruitquote/backend/certs/
 ```
 
 ### systemd 单元
@@ -262,6 +263,8 @@ server {
 | `PUBLIC_BASE_URL` | `https://zhenguolian.cn` | 对外资源地址 |
 | `WECHAT_PAY_MOCK` | `false` | 否则 `/api/payments/dev/mock-success` 可被用于模拟支付（代码内已按 Mock 开关拦截，但不应依赖） |
 | `WECHAT_PAY_PRIVATE_KEY_PATH` | `/srv/fruitquote/backend/certs/apiclient_key.pem` | 绝对路径，600 权限 |
+| `WECHAT_PAY_PUBLIC_KEY_PATH` | `/srv/fruitquote/backend/certs/pub_key.pem` | 微信支付公钥，回调验签用，与公钥 ID 成对配置 |
+| `WECHAT_PAY_PUBLIC_KEY_ID` | `PUB_KEY_ID_0114xxx` | 公钥 ID，商户平台可查 |
 | `WECHAT_PAY_NOTIFY_URL` | `https://zhenguolian.cn/api/payments/wechat/notify` | 支付回调 |
 | `WECHAT_PAY_REFUND_NOTIFY_URL` | `https://zhenguolian.cn/api/payments/wechat/refund-notify` | 退款回调 |
 | `SMTP_*` / `ORDER_NOTIFY_EMAIL` | 生产邮箱 | 支付成功后给供应商发配货邮件 |
@@ -401,7 +404,7 @@ curl -i -X POST https://zhenguolian.cn/api/payments/wechat/notify \
 | 现象 | 排查方向 |
 | --- | --- |
 | 微信回调收不到 | `/var/log/nginx/wechatpay-notify.log` 是否有请求；无则检查 HTTPS 可达性、WAF、URL 是否被重定向 |
-| 回调一直"验签失败" | 平台证书下载失败、`WECHAT_PAY_API_V3_KEY` 错误、服务器时间偏差超 5 分钟、nginx 丢失 `Wechatpay-*` 头 |
+| 回调一直"验签失败" | 公钥 ID / 平台证书序列号与微信实际发来的 `Wechatpay-Serial` 不匹配、公钥文件或 APIv3 密钥错误、服务器时间偏差超 5 分钟、nginx 丢失 `Wechatpay-*` 头 |
 | 支付成功但订单仍 `unpaid` | 回调未到达，前端查单接口会兜底；若长时间不更新须查回调链路 |
 | 下单报 500 `WeChat Pay is not configured` | `.env` 缺 `WECHAT_MCHID` / `WECHAT_PAY_API_V3_KEY` / 证书序列号 / 私钥路径 / 回调地址 |
 | `appid 与 mchid 不匹配` | 小程序 appid 未在商户平台绑定 |
