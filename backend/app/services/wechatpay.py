@@ -4,9 +4,11 @@
 用 Mock 模式即可端到端跑通「下单→支付→回调→退款」全流程；凭证到位后在 .env 填配置、
 将 WECHAT_PAY_MOCK 关掉即切真实微信支付，业务代码无需改动。
 
-对外暴露三个能力：
+对外暴露五个能力：
 - create_jsapi_payment(payment, openid): 统一下单，返回小程序 uni.requestPayment 所需参数
-- verify_and_parse_notify(headers, body): 校验并解密支付结果回调
+- query_order(out_trade_no): 主动查单，回调丢失时用它兜底对账
+- close_order(out_trade_no): 关闭微信侧预支付单，本地关单时同步调用，避免关单后仍能付款
+- verify_and_parse_notify(headers, body): 平台证书验签 + 解密支付/退款结果回调
 - refund(payment): 按流水原路退款
 
 金额在数据库以「元」为 Decimal 存储，微信 API 以「分」为整型交互，转换集中在本模块。
@@ -87,11 +89,39 @@ def create_jsapi_payment(payment, openid: str) -> dict:
 
 
 def verify_and_parse_notify(headers: dict, body: bytes) -> dict:
-    """校验回调签名并解密报文，返回微信支付结果 dict（含 out_trade_no / transaction_id / amount 等）。
+    """校验回调签名并解密报文，返回微信支付/退款结果 dict（含 out_trade_no / transaction_id 等）。
 
-    Mock 模式不会走真实回调路径（改由 mock-success 接口驱动），此处保留真实实现。
+    Mock 模式无平台证书可验，直接把报文当明文结果解析，便于本地联调。
     """
+    if is_mock():
+        return json.loads(body.decode('utf-8'))
     return _real_verify_and_parse_notify(headers, body)
+
+
+def query_order(out_trade_no: str) -> dict:
+    """主动查单：返回微信支付订单，trade_state=SUCCESS 表示已支付。
+
+    用于回调丢失/延迟时的兜底对账；Mock 模式无真实订单，返回空结果。
+    """
+    if is_mock():
+        return {}
+    _ensure_pay_config()
+    return _get(f'/v3/pay/transactions/out-trade-no/{out_trade_no}?mchid={settings.wechat_mchid}')
+
+
+def close_order(out_trade_no: str) -> bool:
+    """关闭微信侧预支付单，防止本地关单后用户仍能完成付款。返回是否关闭成功。
+
+    订单不存在、已支付、已关闭等都会返回 False，由调用方决定后续处理。
+    """
+    if is_mock():
+        return True
+    _ensure_pay_config()
+    try:
+        _post(f'/v3/pay/transactions/out-trade-no/{out_trade_no}/close', {'mchid': settings.wechat_mchid})
+        return True
+    except HTTPException:
+        return False
 
 
 def refund(payment) -> dict:
@@ -141,23 +171,41 @@ def _authorization_header(method: str, url_path: str, body: str) -> str:
     )
 
 
-def _post(url_path: str, payload: dict) -> dict:
+def _request(method: str, url_path: str, payload: dict | None = None) -> dict:
+    """带商户签名的 v3 请求。url_path 需含查询串（签名内容包含查询串）。"""
     import urllib.error
     import urllib.request
 
-    body = json.dumps(payload, ensure_ascii=False)
+    body = json.dumps(payload, ensure_ascii=False) if payload is not None else ''
     headers = {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'Authorization': _authorization_header('POST', url_path, body),
+        'Authorization': _authorization_header(method, url_path, body),
     }
-    request = urllib.request.Request(WECHATPAY_HOST + url_path, data=body.encode('utf-8'), headers=headers, method='POST')
+    request = urllib.request.Request(
+        WECHATPAY_HOST + url_path,
+        data=body.encode('utf-8') if payload is not None else None,
+        headers=headers,
+        method=method,
+    )
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
-            return json.loads(response.read().decode('utf-8'))
+            raw = response.read().decode('utf-8')
     except urllib.error.HTTPError as exc:  # noqa: F821 - urllib.error 随 urllib.request 导入
         detail = exc.read().decode('utf-8', errors='ignore')
         raise HTTPException(status_code=502, detail=f'WeChat Pay API error: {detail}') from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(status_code=502, detail=f'WeChat Pay API unreachable: {exc.reason}') from exc
+    # 关单等接口成功时返回 204/空体，不能直接 json.loads
+    return json.loads(raw) if raw else {}
+
+
+def _post(url_path: str, payload: dict) -> dict:
+    return _request('POST', url_path, payload)
+
+
+def _get(url_path: str) -> dict:
+    return _request('GET', url_path)
 
 
 def _real_create_jsapi_payment(payment, openid: str) -> dict:
@@ -196,8 +244,7 @@ def _real_create_jsapi_payment(payment, openid: str) -> dict:
 
 def _real_verify_and_parse_notify(headers: dict, body: bytes) -> dict:
     _ensure_pay_config()
-    # 注：完整实现还应用微信平台证书验签 headers 中的签名。此处解密回调资源体，
-    # 平台证书验签需先下载并缓存平台证书，凭证到位后补齐。
+    _verify_notify_signature(headers, body)
     envelope = json.loads(body.decode('utf-8'))
     resource = envelope.get('resource') or {}
     plaintext = _aes_gcm_decrypt(
@@ -206,6 +253,92 @@ def _real_verify_and_parse_notify(headers: dict, body: bytes) -> dict:
         resource.get('ciphertext', ''),
     )
     return json.loads(plaintext)
+
+
+# --------------------------------------------------------------------------
+# 平台证书：回调验签用。微信平台证书会轮换，按序列号缓存 6 小时
+# --------------------------------------------------------------------------
+PLATFORM_CERT_CACHE_SECONDS = 6 * 3600
+_platform_certs: dict[str, object] = {}
+_platform_certs_expire_at = 0.0
+
+
+def _invalidate_platform_certs() -> None:
+    global _platform_certs_expire_at
+    _platform_certs.clear()
+    _platform_certs_expire_at = 0.0
+
+
+def _platform_public_keys() -> dict[str, object]:
+    """返回 {平台证书序列号: 证书公钥}，带缓存避免每次回调都重新下载。"""
+    global _platform_certs_expire_at
+    if _platform_certs and time.time() < _platform_certs_expire_at:
+        return _platform_certs
+    data = _get('/v3/certificates')
+    keys: dict[str, object] = {}
+    for item in data.get('data') or []:
+        encrypted = item.get('encrypt_certificate') or {}
+        cert_pem = _aes_gcm_decrypt(
+            encrypted.get('associated_data', ''),
+            encrypted.get('nonce', ''),
+            encrypted.get('ciphertext', ''),
+        )
+        keys[item.get('serial_no')] = _load_cert_public_key(cert_pem)
+    if not keys:
+        raise HTTPException(status_code=502, detail='WeChat Pay returned no platform certificate')
+    _platform_certs.clear()
+    _platform_certs.update(keys)
+    _platform_certs_expire_at = time.time() + PLATFORM_CERT_CACHE_SECONDS
+    return _platform_certs
+
+
+def _load_cert_public_key(cert_pem: str):
+    from cryptography import x509
+
+    return x509.load_pem_x509_certificate(cert_pem.encode('utf-8')).public_key()
+
+
+def _notify_header(headers: dict, name: str) -> str:
+    for key, value in headers.items():
+        if key.lower() == name.lower():
+            return value or ''
+    return ''
+
+
+def _verify_notify_signature(headers: dict, body: bytes) -> None:
+    """用平台证书公钥验 RSA-SHA256 签名，并拒绝超过 5 分钟的回调以防重放。"""
+    import base64
+
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    timestamp = _notify_header(headers, 'Wechatpay-Timestamp')
+    nonce = _notify_header(headers, 'Wechatpay-Nonce')
+    signature = _notify_header(headers, 'Wechatpay-Signature')
+    serial = _notify_header(headers, 'Wechatpay-Serial')
+    if not all([timestamp, nonce, signature, serial]):
+        raise HTTPException(status_code=401, detail='WeChat Pay notify missing signature headers')
+    try:
+        expired = abs(int(time.time()) - int(timestamp)) > 300
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail='Invalid WeChat Pay notify timestamp') from exc
+    if expired:
+        raise HTTPException(status_code=401, detail='WeChat Pay notify timestamp expired')
+
+    public_key = _platform_public_keys().get(serial)
+    if public_key is None:
+        # 序列号未知多为平台证书轮换：清缓存重拉一次再试
+        _invalidate_platform_certs()
+        public_key = _platform_public_keys().get(serial)
+    if public_key is None:
+        raise HTTPException(status_code=401, detail='Unknown WeChat Pay platform certificate serial')
+
+    message = f'{timestamp}\n{nonce}\n{body.decode("utf-8")}\n'
+    try:
+        public_key.verify(base64.b64decode(signature), message.encode('utf-8'), padding.PKCS1v15(), hashes.SHA256())
+    except InvalidSignature as exc:
+        raise HTTPException(status_code=401, detail='WeChat Pay notify signature invalid') from exc
 
 
 def _aes_gcm_decrypt(associated_data: str, nonce: str, ciphertext: str) -> str:
@@ -229,8 +362,8 @@ def _real_refund(payment) -> dict:
         'out_refund_no': generate_out_trade_no('R'),
         'amount': {'refund': fen, 'total': fen, 'currency': 'CNY'},
     }
-    if settings.wechat_pay_notify_url:
-        payload['notify_url'] = settings.wechat_pay_notify_url
+    if settings.wechat_pay_refund_notify_url:
+        payload['notify_url'] = settings.wechat_pay_refund_notify_url
     result = _post(url_path, payload)
     refund_id = result.get('refund_id')
     if not refund_id:

@@ -4,6 +4,10 @@ __pycache__/
 .venv/
 .env
 
+# 微信支付商户证书私钥，绝不提交
+*.pem
+backend/certs/
+
 # Backend runtime uploads
 backend/uploads/*
 !backend/uploads/.gitkeep

@@ -86,6 +86,12 @@ async function payOrderNow(order) {
     uni.showToast({ title: '支付成功', icon: 'success' })
     await loadOrders()
   } catch (err) {
+    if (err.code === 'PAY_SETTLE_PENDING') {
+      // 付款动作已完成但后端尚未确认：提示后刷新，避免误报失败
+      uni.showToast({ title: err.message, icon: 'none' })
+      await loadOrders()
+      return
+    }
     // 支付取消/失败：订单留在“待支付”，不弹错误打断
     if (err.message && err.message !== '支付已取消') {
       uni.showToast({ title: err.message, icon: 'none' })

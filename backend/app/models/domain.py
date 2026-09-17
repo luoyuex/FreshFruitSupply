@@ -216,7 +216,8 @@ class OrderPayment(TimestampMixin, Base):
     """订单支付流水：一个订单可有多笔（首付 initial + 若干补差价 supplement）。
 
     每笔对应一次微信支付，out_trade_no 全局唯一作为商户订单号。
-    status: pending（已下单待支付）/success（支付成功）/refunded（已退款）。
+    status: pending（已下单待支付）/success（支付成功）/refunded（已退款）/
+    refund_failed（退款未到账，需人工介入）/cancelled（作废的未支付流水）。
     """
 
     __tablename__ = 'order_payments'
@@ -226,7 +227,7 @@ class OrderPayment(TimestampMixin, Base):
     out_trade_no: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     kind: Mapped[str] = mapped_column(String(16), default='initial', index=True)  # initial/supplement
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
-    status: Mapped[str] = mapped_column(String(16), default='pending', index=True)  # pending/success/refunded/cancelled（cancelled=作废未支付的补差价流水）
+    status: Mapped[str] = mapped_column(String(16), default='pending', index=True)  # pending/success/refunded/refund_failed/cancelled
     prepay_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     transaction_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     refund_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

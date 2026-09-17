@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     wechat_pay_cert_serial: str = ''
     wechat_pay_private_key_path: str = ''
     wechat_pay_notify_url: str = ''
+    # 退款结果回调地址（可选）；不填则退款按“受理成功”直接记账
+    wechat_pay_refund_notify_url: str = ''
     # Mock 模式：不调用真实微信支付 API，用开发接口模拟支付成功，便于凭证到位前联调
     wechat_pay_mock: bool = True
     # 待支付订单超时自动关闭时长（分钟）

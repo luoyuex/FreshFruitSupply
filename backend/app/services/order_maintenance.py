@@ -3,6 +3,10 @@
 下单生成 unpaid 订单后若超过 order_unpaid_timeout_minutes 分钟仍未支付，
 自动置为 closed 并释放其占用的优惠券（无需退款——从未支付成功）。
 
+关闭前会同步关闭微信侧预支付单，否则用户超时后仍能在微信里完成付款，
+导致「订单已关闭但钱已收」；万一关单失败且查单显示已支付，则放弃本次关单，
+交由支付回调或主动查单接口结算。
+
 由应用启动时拉起的 asyncio 定时任务周期调用 close_expired_unpaid_orders；
 也可单独调用（如测试）。所有 DB 会话在函数内自建自关，独立于请求生命周期。
 """
@@ -50,6 +54,35 @@ def refund_order(db: Session, order: Order) -> None:
         order.paid_amount = Decimal('0')
 
 
+def _close_pending_payments(db: Session, order: Order) -> bool:
+    """关闭订单下所有待支付流水：先关微信侧预支付单，再本地作废。
+
+    返回 False 表示关单失败且查单确认已支付——此时不能关单，应由回调/主动查单结算。
+    """
+    pending_payments = (
+        db.query(OrderPayment)
+        .filter(OrderPayment.order_id == order.id, OrderPayment.status == 'pending')
+        .all()
+    )
+    for payment in pending_payments:
+        try:
+            if not wechatpay.close_order(payment.out_trade_no) and _is_paid_at_wechat(payment.out_trade_no):
+                return False
+        except Exception:
+            # 微信不可用/未配置：按未支付继续本地关单；万一钱真到账，结算逻辑会原路退回
+            pass
+        payment.status = 'cancelled'
+    return True
+
+
+def _is_paid_at_wechat(out_trade_no: str) -> bool:
+    """关单失败时查单确认是否已支付——已支付则不能再关单，应由回调/主动查单结算。"""
+    try:
+        return wechatpay.query_order(out_trade_no).get('trade_state') == 'SUCCESS'
+    except Exception:
+        return False
+
+
 def cancel_order(db: Session, order: Order) -> None:
     """取消订单：已付款则原路退款并置 cancelled，未付款直接 closed。两者都释放占用的券。
 
@@ -60,6 +93,7 @@ def cancel_order(db: Session, order: Order) -> None:
         refund_order(db, order)
         order.status = CANCELLED_STATUS
     else:
+        _close_pending_payments(db, order)
         order.status = CLOSED_STATUS
     release_order_coupons(db, order)
 
@@ -67,7 +101,8 @@ def cancel_order(db: Session, order: Order) -> None:
 def close_expired_unpaid_orders() -> int:
     """关闭所有超时未支付的订单，返回本次关闭数量。
 
-    以 created_at 判断是否超过配置的超时时长；关闭时释放占用的券。
+    以 created_at 判断是否超过配置的超时时长；关闭时先关微信侧预支付单，
+    再置 closed 并释放占用的券。若查单显示已支付则跳过，留给回调结算。
     """
     timeout_minutes = settings.order_unpaid_timeout_minutes
     if timeout_minutes <= 0:
@@ -80,12 +115,16 @@ def close_expired_unpaid_orders() -> int:
             .filter(Order.status == 'unpaid', Order.created_at < deadline)
             .all()
         )
+        closed = 0
         for order in expired:
+            if not _close_pending_payments(db, order):
+                continue
             order.status = 'closed'
             release_order_coupons(db, order)
+            closed += 1
         if expired:
             db.commit()
-        return len(expired)
+        return closed
     finally:
         db.close()
 

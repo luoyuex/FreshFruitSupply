@@ -16,12 +16,14 @@ from app.services.customer import get_or_create_customer
 from app.services.settings import compute_delivery_fee, get_delivery_config
 from app.services.email import send_order_email
 from app.services.upload import save_upload, to_public_urls
-from app.services.wechatpay import create_jsapi_payment, generate_out_trade_no, is_mock, verify_and_parse_notify
+from app.services.wechatpay import close_order, create_jsapi_payment, generate_out_trade_no, is_mock, query_order, refund, verify_and_parse_notify
 from app.services.order_maintenance import cancel_order
 
 router = APIRouter()
 ORDER_EDIT_CUTOFF = time(22, 0)
 EDITABLE_ORDER_STATUSES = {'pending', 'confirmed'}
+# 支付流水的终态：回调「幂等」判定用，避免重复回调重复退款/重复累加已付
+SETTLED_PAYMENT_STATUSES = {'success', 'refunded', 'refund_failed'}
 
 
 def _is_before_order_edit_cutoff() -> bool:
@@ -647,17 +649,18 @@ def _reusable_pending_payment(db: Session, order: Order, kind: str) -> OrderPaym
 def create_order(
     payload: OrderCreate,
     db: Session = Depends(get_db),
-    auth_customer: Customer | None = Depends(get_optional_auth_customer),
+    auth_customer: Customer = Depends(get_current_customer),
 ):
     """创建待支付订单。此时不发邮件——需支付成功后才通知供应商配货。
 
+    下单必须是登录态：openid 只能来自登录令牌（code2session），不能由客户端传入，
+    否则会给任意 openid 绑定客户记录、并导致 JSAPI 支付时付款人与 openid 不一致。
     下单即锁定优惠券占位；若超时未支付，关单时会释放。前端拿到订单后立即调
     POST /orders/{id}/pay 拉起微信支付。
     """
-    customer = auth_customer or get_or_create_customer(db, phone=payload.customer_phone, wechat_openid=payload.wechat_openid)
     order = Order(
         order_no=_order_no(),
-        customer_id=customer.id,
+        customer_id=auth_customer.id,
         status='unpaid',
         receiver_name=payload.receiver_name,
         receiver_phone=payload.receiver_phone,
@@ -667,7 +670,7 @@ def create_order(
         detail_address=payload.detail_address,
         delivery_note=payload.delivery_note,
     )
-    _apply_order_payload(order, customer, payload, db)
+    _apply_order_payload(order, auth_customer, payload, db)
     db.add(order)
     db.commit()
     db.refresh(order)
@@ -698,13 +701,15 @@ def pay_order(
         raise HTTPException(status_code=400, detail='订单金额异常，无法支付')
 
     payment = _reusable_pending_payment(db, order, 'initial')
+    if payment is not None and payment.amount != amount:
+        # 应付已变化：作废旧流水并关闭微信侧预支付单，否则旧金额的 prepay_id 仍可被支付
+        close_order(payment.out_trade_no)
+        payment.status = 'cancelled'
+        payment = None
     if payment is None:
         payment = _new_payment(order, amount, 'initial')
         db.add(payment)
         db.flush()
-    elif payment.amount != amount:
-        # 复用旧流水前对齐金额（极少见：编辑改动了应付但流水已生成）
-        payment.amount = amount
 
     pay_params = create_jsapi_payment(payment, customer.wechat_openid or '')
     db.commit()
@@ -721,13 +726,10 @@ async def _settle_successful_payment(db: Session, payment: OrderPayment, transac
 
     首付付满 → 订单从 unpaid 转 pending 并发配货邮件；
     补差价付满 → 落库暂存的明细变更（加商品/加量），刷新应付并重发配货邮件。
+    订单已关闭/已取消（或流水已作废）后才到账的，视为超时误付，原路退回。
     """
-    if payment.status == 'success':
+    if payment.status in SETTLED_PAYMENT_STATUSES:
         return  # 幂等：重复回调直接忽略
-    payment.status = 'success'
-    payment.transaction_id = transaction_id
-    payment.paid_at = datetime.now()
-
     order = (
         db.query(Order)
         .options(joinedload(Order.items).joinedload(OrderItem.fruit))
@@ -737,6 +739,20 @@ async def _settle_successful_payment(db: Session, payment: OrderPayment, transac
     if not order:
         db.commit()
         return
+
+    # 关单/取消/作废旧流水后才到账的钱：原路退回，避免收了钱却没有有效订单
+    if order.status in {'closed', 'cancelled'} or payment.status == 'cancelled':
+        payment.transaction_id = transaction_id
+        result = refund(payment)
+        payment.status = 'refunded'
+        payment.refund_id = result.get('refund_id')
+        payment.refunded_at = datetime.now()
+        db.commit()
+        return
+
+    payment.status = 'success'
+    payment.transaction_id = transaction_id
+    payment.paid_at = datetime.now()
     order.paid_amount = (order.paid_amount or Decimal('0')) + payment.amount
 
     # 首付付满：订单成立，转待确认并通知供应商
@@ -783,6 +799,70 @@ async def wechat_pay_notify(request: Request, db: Session = Depends(get_db)):
     if trade_state == 'SUCCESS':
         await _settle_successful_payment(db, payment, transaction_id)
     return {'code': 'SUCCESS', 'message': '成功'}
+
+
+@router.post('/payments/wechat/refund-notify')
+async def wechat_refund_notify(request: Request, db: Session = Depends(get_db)):
+    """微信退款结果回调：退款异步完成/异常时回写流水状态。
+
+    未配置 WECHAT_PAY_REFUND_NOTIFY_URL 时微信不会回调，退款按「受理成功」直接记账。
+    """
+    body = await request.body()
+    try:
+        result = verify_and_parse_notify(dict(request.headers), body)
+    except Exception:
+        return {'code': 'FAIL', 'message': '验签失败'}
+
+    out_trade_no = result.get('out_trade_no')
+    refund_status = result.get('refund_status')
+    if not out_trade_no:
+        return {'code': 'FAIL', 'message': '缺少订单号'}
+    payment = db.query(OrderPayment).filter(OrderPayment.out_trade_no == out_trade_no).first()
+    if not payment:
+        return {'code': 'FAIL', 'message': '流水不存在'}
+    payment.refund_id = payment.refund_id or result.get('refund_id')
+    if refund_status == 'SUCCESS':
+        payment.status = 'refunded'
+        payment.refunded_at = payment.refunded_at or datetime.now()
+    elif refund_status in {'CLOSED', 'ABNORMAL'}:
+        # 退款未到账（如用户收款账户异常），需人工介入重新发起退款
+        payment.status = 'refund_failed'
+    db.commit()
+    return {'code': 'SUCCESS', 'message': '成功'}
+
+
+@router.post('/orders/{order_id}/pay/sync', response_model=OrderOut)
+async def sync_order_payment(
+    order_id: int,
+    db: Session = Depends(get_db),
+    auth_customer: Customer = Depends(get_current_customer),
+):
+    """主动查单兜底：前端支付动作完成后调用，对账订单下待支付流水。
+
+    微信回调可能延迟或丢失，前端不能仅凭 requestPayment 成功就认为订单已支付，
+    故支付完成后轮询本接口：查单为 SUCCESS 时按回调同路径结算。
+    """
+    order = (
+        db.query(Order)
+        .options(joinedload(Order.items).joinedload(OrderItem.fruit))
+        .filter(Order.id == order_id, Order.customer_id == auth_customer.id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail='Order not found')
+
+    pending_payments = (
+        db.query(OrderPayment)
+        .filter(OrderPayment.order_id == order.id, OrderPayment.status == 'pending')
+        .all()
+    )
+    for payment in pending_payments:
+        result = query_order(payment.out_trade_no)
+        if result.get('trade_state') == 'SUCCESS':
+            await _settle_successful_payment(db, payment, result.get('transaction_id'))
+    db.refresh(order)
+    attach_reissue_coupons(db, [order])
+    return order
 
 
 @router.post('/payments/dev/mock-success', response_model=OrderOut)
@@ -896,7 +976,9 @@ def update_order(
     # 需补款：把变更暂存到补差价流水，支付成功回调后才落库；订单本身此刻不变
     existing = _reusable_pending_payment(db, order, 'supplement')
     if existing is not None:
-        existing.status = 'cancelled'  # 作废上一笔未支付的补差价流水，避免多条 pending 叠加
+        # 作废上一笔未支付的补差价流水，避免多条 pending 叠加（同步关闭微信侧预支付单）
+        close_order(existing.out_trade_no)
+        existing.status = 'cancelled'
     pending_payload = payload.model_dump_json()
     payment = _new_payment(order, supplement, 'supplement', pending_payload=pending_payload)
     db.add(payment)

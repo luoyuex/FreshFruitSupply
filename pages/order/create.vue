@@ -493,6 +493,16 @@ function finishAndLeave(title, content) {
   })
 }
 
+// 支付结果异步确认超时（回调未到且查单未确认）：此时付款动作已完成，不能断言失败
+function showSettlePendingModal() {
+  uni.showModal({
+    title: '支付结果确认中',
+    content: '微信支付结果稍有延迟，请稍后在“我的订单”查看订单状态。',
+    showCancel: false,
+    success: () => uni.switchTab({ url: '/pages/mine/index' }),
+  })
+}
+
 async function submitNewOrder() {
   // 1) 先创建待支付订单，2) 立即拉起微信支付，3) 支付成功才算下单完成
   const order = await request({ url: '/orders', method: 'POST', data: buildOrderData() })
@@ -500,6 +510,10 @@ async function submitNewOrder() {
   try {
     await startPayment(pay)
   } catch (err) {
+    if (err.code === 'PAY_SETTLE_PENDING') {
+      showSettlePendingModal()
+      return
+    }
     // 支付取消/失败：订单留在“待支付”，可在订单列表继续支付
     uni.showModal({
       title: '尚未完成支付',
@@ -527,6 +541,10 @@ async function submitEditOrder() {
   try {
     await startPayment(result.pay)
   } catch (err) {
+    if (err.code === 'PAY_SETTLE_PENDING') {
+      showSettlePendingModal()
+      return
+    }
     uni.showModal({
       title: '补差价未完成',
       content: `本次修改需补差价 ¥${money(result.supplement_amount)}，未支付前修改不生效。可稍后在订单里重新修改并支付。`,

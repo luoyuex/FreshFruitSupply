@@ -25,6 +25,26 @@ function requestWechatPayment(params) {
   })
 }
 
+// 真实模式下微信支付结果是异步回调的：前端支付动作完成后主动查单兜底，
+// 避免「提示支付成功但订单仍是待支付」。
+const SYNC_ATTEMPTS = 6
+const SYNC_INTERVAL_MS = 1000
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForSettlement(orderId) {
+  for (let attempt = 0; attempt < SYNC_ATTEMPTS; attempt += 1) {
+    const order = await request({ url: `/orders/${orderId}/pay/sync`, method: 'POST' })
+    if (order && order.status && order.status !== 'unpaid') return order
+    if (attempt < SYNC_ATTEMPTS - 1) await delay(SYNC_INTERVAL_MS)
+  }
+  const err = new Error('支付结果确认中，请稍后在“我的订单”查看')
+  err.code = 'PAY_SETTLE_PENDING'
+  throw err
+}
+
 // pay: PayResponse（含 out_trade_no 与 pay_params）
 // 成功后 resolve；Mock 模式在支付“成功”后调 mock-success 驱动后端结算。
 export async function startPayment(pay) {
@@ -39,8 +59,9 @@ export async function startPayment(pay) {
     return
   }
   await requestWechatPayment(params)
-  // 真实模式：requestPayment 成功后，支付结果以微信服务器回调为准，
-  // 前端此处仅代表用户完成付款动作，订单状态由后端回调推进。
+  // 真实模式：requestPayment 成功仅代表用户完成付款动作，订单状态以微信回调为准，
+  // 这里轮询查单接口直到后端结算完成
+  if (pay?.order_id) await waitForSettlement(pay.order_id)
 }
 
 // 为待支付订单发起首付支付并拉起收银台

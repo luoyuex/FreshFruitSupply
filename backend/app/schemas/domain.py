@@ -160,7 +160,6 @@ class OrderItemCreate(BaseModel):
 
 class OrderCreate(BaseModel):
     customer_phone: str
-    wechat_openid: str | None = None
     receiver_name: str
     receiver_phone: str
     province: str
