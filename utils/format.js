@@ -3,6 +3,12 @@ export function money(value) {
   return number.toFixed(number % 1 === 0 ? 0 : 2)
 }
 
+// 数量展示：去掉无意义的小数尾零（1.00 → 1，1.50 → 1.5）
+export function qtyText(value) {
+  const number = Number(value || 0)
+  return String(parseFloat(number.toFixed(2)))
+}
+
 export function statusLabel(status) {
   const labels = {
     in_stock: '现货充足',

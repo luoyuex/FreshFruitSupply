@@ -284,7 +284,7 @@ defineExpose({
         <text>用户协议</text>
       </view>
       <view class="tool" @tap="openAfterSale">
-        <image class="tool-icon" src="/static/icons/user-round.svg" mode="aspectFit" />
+        <image class="tool-icon" src="/static/icons/user-round-dark.svg" mode="aspectFit" />
         <text>联系客服</text>
       </view>
     </view>

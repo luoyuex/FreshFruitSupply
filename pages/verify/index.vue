@@ -40,7 +40,7 @@ const statusTitle = computed(() => {
   return '提交店铺认证'
 })
 const statusDesc = computed(() => {
-  if (verificationStatus.value === 'verified') return '店铺认证已完成，订货时会自动使用认证优惠价。'
+  if (verificationStatus.value === 'verified') return '店铺认证已完成，下单时会自动使用认证优惠价。'
   if (canResubmit.value) return '认证资格已取消，请确认资料后重新认证。'
   if (verificationStatus.value === 'pending_review') return '请重新提交店铺认证资料。'
   return '填写店铺资料并上传门店图片，完成认证后可享认证优惠价。'
@@ -177,7 +177,7 @@ async function submitVerification() {
     await loadVerification()
     uni.showModal({
       title: wasVerified ? '资料已更新' : '认证成功',
-      content: wasVerified ? '认证资料已更新，后续订货将使用最新资料。' : '店铺认证已完成，现在下单可享认证优惠价。',
+      content: wasVerified ? '认证资料已更新，后续下单将使用最新资料。' : '店铺认证已完成，现在下单可享认证优惠价。',
       showCancel: false,
     })
   } catch (err) {
