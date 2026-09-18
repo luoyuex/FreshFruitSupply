@@ -14,7 +14,7 @@ from app.schemas import AnnouncementFeedOut, AnnouncementOut, AnnouncementReadOu
 from app.services.coupon import attach_reissue_coupons, compute_discount, effective_coupon_status, grant_coupons_on_verified, release_order_coupons
 from app.services.customer import get_or_create_customer
 from app.services.settings import compute_delivery_fee, get_delivery_config
-from app.services.email import send_order_email
+from app.services.email import send_order_email, send_order_refund_email
 from app.services.upload import save_upload, to_public_urls
 from app.services.wechatpay import close_order, create_jsapi_payment, generate_out_trade_no, is_mock, query_order, refund, verify_and_parse_notify
 from app.services.order_maintenance import cancel_order
@@ -619,6 +619,18 @@ async def _notify_order_paid(db: Session, order: Order) -> None:
     attach_reissue_coupons(db, [order])
 
 
+async def _notify_order_refunded(order: Order, refunded_amount: Decimal) -> None:
+    """取消退款后邮件通知供应商，让商户对「已付款又被退掉」的订单有感知。
+
+    退款已原路退回，通知只是提醒，发信失败不能影响取消结果，故忽略异常。
+    调用方需先 attach_reissue_coupons，邮件才会带上补送商品明细。
+    """
+    try:
+        await send_order_refund_email(order, refunded_amount)
+    except Exception:
+        pass
+
+
 def _new_payment(order: Order, amount: Decimal, kind: str, pending_payload: str | None = None) -> OrderPayment:
     """新建一笔待支付流水（首付/补差价），商户订单号全局唯一。"""
     return OrderPayment(
@@ -888,15 +900,16 @@ async def mock_pay_success(
 
 
 @router.post('/orders/{order_id}/cancel', response_model=OrderOut)
-def cancel_my_order(
+async def cancel_my_order(
     order_id: int,
     db: Session = Depends(get_db),
     auth_customer: Customer | None = Depends(get_optional_auth_customer),
 ):
     """用户取消自己的订单。
 
-    已付款订单原路退款并置 cancelled；待支付订单直接关闭。已在配送中/已完成的订单
-    不允许自助取消。取消后释放占用的优惠券。
+    只允许商户尚未确认的订单（待支付/待确认）自助取消：已付款则原路退款并置 cancelled，
+    待支付订单直接关闭。商户已确认及之后的订单须联系客服，避免商户备货后被单方面退单。
+    退款会邮件通知商户。取消后释放占用的优惠券。
     """
     customer = _current_customer_or_401(auth_customer)
     order = (
@@ -907,11 +920,42 @@ def cancel_my_order(
     )
     if not order:
         raise HTTPException(status_code=404, detail='Order not found')
-    if order.status not in {'unpaid', 'pending', 'confirmed'}:
-        raise HTTPException(status_code=400, detail='当前订单状态不可取消')
-    cancel_order(db, order)
+    if order.status not in {'unpaid', 'pending'}:
+        raise HTTPException(status_code=400, detail='当前订单状态不可自助取消，请联系客服')
+    refunded_amount = cancel_order(db, order)
     db.commit()
     db.refresh(order)
+    attach_reissue_coupons(db, [order])
+    if refunded_amount > 0:
+        await _notify_order_refunded(order, refunded_amount)
+    return order
+
+
+@router.get('/orders/detail/out-trade-no/{out_trade_no}', response_model=OrderOut)
+def get_order_by_out_trade_no(
+    out_trade_no: str,
+    db: Session = Depends(get_db),
+    auth_customer: Customer | None = Depends(get_optional_auth_customer),
+):
+    """按微信支付商户订单号(out_trade_no)查订单。
+
+    供微信支付「订单路径」跳转订单详情页使用（path 模板 pages/order/detail?out_trade_no=${商品订单号}），
+    仍校验订单归属当前登录客户，防止越权。
+    """
+    if not auth_customer:
+        raise HTTPException(status_code=401, detail='Missing customer login')
+    payment = db.query(OrderPayment).filter(OrderPayment.out_trade_no == out_trade_no).first()
+    order = (
+        db.query(Order)
+        .options(joinedload(Order.items).joinedload(OrderItem.fruit))
+        .filter(
+            Order.id == (payment.order_id if payment else -1),
+            Order.customer_id == auth_customer.id,
+        )
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail='Order not found')
     attach_reissue_coupons(db, [order])
     return order
 

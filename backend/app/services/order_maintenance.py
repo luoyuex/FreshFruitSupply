@@ -83,19 +83,22 @@ def _is_paid_at_wechat(out_trade_no: str) -> bool:
         return False
 
 
-def cancel_order(db: Session, order: Order) -> None:
+def cancel_order(db: Session, order: Order) -> Decimal:
     """取消订单：已付款则原路退款并置 cancelled，未付款直接 closed。两者都释放占用的券。
 
+    返回实际退回的金额（未付款订单为 0），供调用方决定是否通知商户。
     供用户端与后台取消共用。调用方负责鉴权与提交事务。
     """
-    has_paid = (order.paid_amount or Decimal('0')) > 0
-    if has_paid:
+    refunded_amount = order.paid_amount or Decimal('0')
+    if refunded_amount > 0:
         refund_order(db, order)
         order.status = CANCELLED_STATUS
     else:
+        refunded_amount = Decimal('0')
         _close_pending_payments(db, order)
         order.status = CLOSED_STATUS
     release_order_coupons(db, order)
+    return refunded_amount
 
 
 def close_expired_unpaid_orders() -> int:

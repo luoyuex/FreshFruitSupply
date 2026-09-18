@@ -1,3 +1,4 @@
+from decimal import Decimal
 from email.message import EmailMessage
 
 import aiosmtplib
@@ -6,7 +7,13 @@ from app.core.config import settings
 from app.models import Order
 
 
-def _build_order_body(order: Order) -> str:
+def _ensure_smtp_configured() -> None:
+    if not all([settings.smtp_host, settings.smtp_username, settings.smtp_password, settings.order_notify_email]):
+        raise RuntimeError('SMTP settings are incomplete')
+
+
+def _order_detail_lines(order: Order) -> list[str]:
+    """订单公共明细（收货信息 + 商品 + 金额），配货通知与退款通知共用。"""
     lines = [
         f'订单号：{order.order_no}',
         f'订单状态：{order.status}',
@@ -35,18 +42,29 @@ def _build_order_body(order: Order) -> str:
     else:
         lines.append('配送费：免（已满包邮门槛）')
     lines.append(f'实付：{order.payable_total}')
+    return lines
+
+
+def _build_order_body(order: Order) -> str:
+    return '\n'.join(_order_detail_lines(order))
+
+
+def _build_refund_body(order: Order, refunded_amount: Decimal) -> str:
+    lines = [
+        '客户已取消该订单，商户尚未确认，无需配货。',
+        f'已支付款项原路退回：{refunded_amount} 元。',
+        '',
+        *_order_detail_lines(order),
+    ]
     return '\n'.join(lines)
 
 
-async def send_order_email(order: Order) -> None:
-    if not all([settings.smtp_host, settings.smtp_username, settings.smtp_password, settings.order_notify_email]):
-        raise RuntimeError('SMTP settings are incomplete')
-
+async def _send(to: str, subject: str, body: str) -> None:
     message = EmailMessage()
     message['From'] = settings.smtp_from or settings.smtp_username
-    message['To'] = settings.order_notify_email
-    message['Subject'] = f'新的水果预订订单：{order.order_no}'
-    message.set_content(_build_order_body(order))
+    message['To'] = to
+    message['Subject'] = subject
+    message.set_content(body)
 
     await aiosmtplib.send(
         message,
@@ -56,4 +74,19 @@ async def send_order_email(order: Order) -> None:
         password=settings.smtp_password,
         use_tls=settings.smtp_port == 465,
         start_tls=settings.smtp_port != 465,
+    )
+
+
+async def send_order_email(order: Order) -> None:
+    _ensure_smtp_configured()
+    await _send(settings.order_notify_email, f'新的水果预订订单：{order.order_no}', _build_order_body(order))
+
+
+async def send_order_refund_email(order: Order, refunded_amount: Decimal) -> None:
+    """订单取消退款后通知供应商，避免商户对「已付款后被退掉」的订单无感知。"""
+    _ensure_smtp_configured()
+    await _send(
+        settings.order_notify_email,
+        f'订单已取消退款：{order.order_no}',
+        _build_refund_body(order, refunded_amount),
     )

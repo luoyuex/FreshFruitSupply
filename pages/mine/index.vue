@@ -25,6 +25,7 @@ const displayName = computed(() => {
   return phone.value ? `鲜小店${phone.value.slice(-4)}` : '微信用户'
 })
 const orderStats = computed(() => ({
+  unpaid: orders.value.filter((item) => item.status === 'unpaid').length,
   pending: orders.value.filter((item) => item.status === 'pending').length,
   confirmed: orders.value.filter((item) => item.status === 'confirmed').length,
   delivering: orders.value.filter((item) => item.status === 'delivering').length,
@@ -241,6 +242,11 @@ defineExpose({
         <text class="all-order" @tap="goOrders()">全部订单 ›</text>
       </view>
       <view class="order-icons">
+        <view class="order-icon" @tap="goOrders('unpaid')">
+          <image class="line-icon" src="/static/icons/wallet.svg" mode="aspectFit" />
+          <text>待支付</text>
+          <view v-if="orderStats.unpaid" class="dot">{{ orderStats.unpaid }}</view>
+        </view>
         <view class="order-icon" @tap="goOrders('pending')">
           <image class="line-icon" src="/static/icons/clock-3.svg" mode="aspectFit" />
           <text>待确认</text>
@@ -472,7 +478,7 @@ defineExpose({
 
 .order-icons {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   margin-top: 38rpx;
 }
 

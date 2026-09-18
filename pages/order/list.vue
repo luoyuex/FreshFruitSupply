@@ -3,8 +3,8 @@ import { computed, ref, shallowRef } from 'vue'
 import { onLoad, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { money, statusLabel } from '../../utils/format.js'
 import { request } from '../../utils/request.js'
-import { payOrder } from '../../utils/pay.js'
 import { hasCustomerLogin, loginWithWeChat } from '../../utils/auth.js'
+import { createOrderActions } from '../../utils/order-actions.js'
 
 const tabs = [
   { key: '', label: '全部' },
@@ -19,7 +19,6 @@ const orders = ref([])
 const activeStatus = shallowRef('')
 const loading = shallowRef(false)
 const loginChecked = shallowRef(false)
-const paying = shallowRef(false)
 const afterSaleVisible = shallowRef(false)
 
 const filteredOrders = computed(() => {
@@ -58,16 +57,12 @@ async function loadOrders() {
   }
 }
 
+// 支付/取消等操作与详情页共用，操作成功后刷新列表
+const { paying, payOrderNow, cancelOrder, canCancel, orderEditReason, addressText } =
+  createOrderActions({ onChanged: loadOrders })
+
 function switchStatus(status) {
   activeStatus.value = status
-}
-
-function orderEditReason(order) {
-  if (order.can_edit) return '每天22:00前可修改'
-  if (order.status === 'delivering') return '订单配送中，不能修改'
-  if (order.status === 'completed') return '订单已完成，不能修改'
-  if (order.status === 'cancelled') return '订单已取消，不能修改'
-  return '已过22:00，不能修改'
 }
 
 function editOrder(order) {
@@ -78,52 +73,8 @@ function editOrder(order) {
   uni.navigateTo({ url: `/pages/order/create?edit=${order.id}` })
 }
 
-async function payOrderNow(order) {
-  if (paying.value) return
-  paying.value = true
-  try {
-    await payOrder(order.id)
-    uni.showToast({ title: '支付成功', icon: 'success' })
-    await loadOrders()
-  } catch (err) {
-    if (err.code === 'PAY_SETTLE_PENDING') {
-      // 付款动作已完成但后端尚未确认：提示后刷新，避免误报失败
-      uni.showToast({ title: err.message, icon: 'none' })
-      await loadOrders()
-      return
-    }
-    // 支付取消/失败：订单留在“待支付”，不弹错误打断
-    if (err.message && err.message !== '支付已取消') {
-      uni.showToast({ title: err.message, icon: 'none' })
-    }
-  } finally {
-    paying.value = false
-  }
-}
-
-function cancelOrder(order) {
-  const paid = order.status !== 'unpaid'
-  uni.showModal({
-    title: paid ? '取消并退款' : '取消订单',
-    content: paid
-      ? '取消后将原路退还已支付的款项，确认取消该订单？'
-      : '确认取消该待支付订单？',
-    success: async (res) => {
-      if (!res.confirm) return
-      try {
-        await request({ url: `/orders/${order.id}/cancel`, method: 'POST' })
-        uni.showToast({ title: paid ? '已取消，退款处理中' : '订单已取消', icon: 'none' })
-        await loadOrders()
-      } catch (err) {
-        uni.showToast({ title: err.message || '取消失败', icon: 'none' })
-      }
-    },
-  })
-}
-
-// 已付款、未进入配送的订单可由用户取消并触发退款
-function canCancel(order) {
-  return ['unpaid', 'pending', 'confirmed'].includes(order.status)
+function goDetail(order) {
+  uni.navigateTo({ url: `/pages/order/detail?id=${order.id}` })
 }
 
 function goBuy() {
@@ -136,10 +87,6 @@ function openAfterSale() {
 
 function closeAfterSale() {
   afterSaleVisible.value = false
-}
-
-function addressText(order) {
-  return `${order.province || ''}${order.city || ''}${order.district || ''}${order.detail_address || ''}`
 }
 
 onLoad((query) => {
@@ -180,7 +127,7 @@ onPullDownRefresh(async () => {
       <button class="go-buy" @tap="goBuy">去选水果</button>
     </view>
 
-    <view v-for="order in filteredOrders" :key="order.id" class="order-card">
+    <view v-for="order in filteredOrders" :key="order.id" class="order-card" @tap="goDetail(order)">
       <view class="order-head">
         <text class="order-no">{{ order.order_no }}</text>
         <text class="order-status">{{ statusLabel(order.status) }}</text>
@@ -208,10 +155,10 @@ onPullDownRefresh(async () => {
           <view v-else class="edit-hint">{{ orderEditReason(order) }}</view>
         </view>
         <view class="order-actions">
-          <button v-if="canCancel(order)" class="cancel-order" @tap="cancelOrder(order)">取消订单</button>
-          <button v-if="order.status === 'unpaid'" class="pay-order" :loading="paying" :disabled="paying" @tap="payOrderNow(order)">去支付</button>
-          <button v-else-if="order.status !== 'completed'" class="edit-order" :class="{ disabled: !order.can_edit }" @tap="editOrder(order)">修改订单</button>
-          <button v-if="order.status === 'completed'" class="after-sale-btn" @tap="openAfterSale">售后</button>
+          <button v-if="canCancel(order)" class="cancel-order" @tap.stop="cancelOrder(order)">取消订单</button>
+          <button v-if="order.status === 'unpaid'" class="pay-order" :loading="paying" :disabled="paying" @tap.stop="payOrderNow(order)">去支付</button>
+          <button v-else-if="order.status !== 'completed'" class="edit-order" :class="{ disabled: !order.can_edit }" @tap.stop="editOrder(order)">修改订单</button>
+          <button v-if="order.status === 'completed'" class="after-sale-btn" @tap.stop="openAfterSale">售后</button>
         </view>
       </view>
     </view>
