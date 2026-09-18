@@ -7,6 +7,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import get_current_customer, get_optional_auth_customer
+from app.core.config import settings
 from app.db.session import get_db
 from app.models import Announcement, Customer, CustomerAddress, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, OrderItem, OrderPayment
 from app.models.domain import CHINA_TZ
@@ -58,7 +59,8 @@ def _apply_order_payload(order: Order, customer: Customer, payload: OrderCreate,
         if fruit.stock_status == 'out_of_stock':
             raise HTTPException(status_code=400, detail=f'{fruit.name} is out of stock')
 
-        price = fruit.quote.verified_price if customer.verification_status == 'verified' else fruit.quote.normal_price
+        # 认证功能关闭时一律按普通价（忽略历史认证状态），与 C 端展示口径一致
+        price = fruit.quote.verified_price if settings.verification_enabled and customer.verification_status == 'verified' else fruit.quote.normal_price
         subtotal = price * line.quantity
         estimated_total += subtotal
         order.items.append(OrderItem(
@@ -226,7 +228,8 @@ def _preview_payable(order: Order, customer: Customer, payload: OrderCreate, db:
             raise HTTPException(status_code=404, detail=f'Fruit {line.fruit_id} not found')
         if fruit.stock_status == 'out_of_stock':
             raise HTTPException(status_code=400, detail=f'{fruit.name} is out of stock')
-        price = fruit.quote.verified_price if customer.verification_status == 'verified' else fruit.quote.normal_price
+        # 认证功能关闭时一律按普通价（忽略历史认证状态），与 C 端展示口径一致
+        price = fruit.quote.verified_price if settings.verification_enabled and customer.verification_status == 'verified' else fruit.quote.normal_price
         estimated_total += price * line.quantity
 
     discount = Decimal('0')
@@ -528,10 +531,19 @@ def _attach_phone_to_customer(db: Session, customer: Customer, phone: str) -> Cu
     elif existing:
         raise HTTPException(status_code=409, detail='Phone number is already bound')
     customer.phone = phone
-    if customer.verification_status == 'verified':
+    if settings.verification_enabled and customer.verification_status == 'verified':
         # 合并到已认证的手机号记录时补发认证券（幂等，不会重复发）
         grant_coupons_on_verified(db, customer)
     return customer
+
+
+@router.get('/config/client')
+def get_client_config():
+    """C 端功能开关：前端据此显隐功能入口。
+
+    后端切换开关后，C 端无需发版即可生效（小程序冷启动时拉取）。
+    """
+    return {'verification_enabled': settings.verification_enabled}
 
 
 @router.get('/customers/verification/me', response_model=VerificationOut)
@@ -576,6 +588,9 @@ async def submit_verification(
     db: Session = Depends(get_db),
     auth_customer: Customer | None = Depends(get_optional_auth_customer),
 ):
+    # 认证功能关闭（快速上线期）：直接拒绝，防止绕过前端入口提交
+    if not settings.verification_enabled:
+        raise HTTPException(status_code=403, detail='认证功能暂未开放')
     if auth_customer:
         customer = _attach_phone_to_customer(db, auth_customer, phone)
     else:

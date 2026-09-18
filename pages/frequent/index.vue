@@ -5,6 +5,7 @@ import { addCartItem, cartCount } from '../../utils/cart.js'
 import { fruitIcon, money, statusLabel } from '../../utils/format.js'
 import { hasCustomerLogin, loginWithWeChat } from '../../utils/auth.js'
 import { request } from '../../utils/request.js'
+import { flags } from '../../utils/flags.js'
 import { refreshCustomTabBar } from '../../utils/tabBar.js'
 
 const items = shallowRef([])
@@ -192,7 +193,7 @@ defineExpose({
           <view class="item-stat">已购 {{ fruit.purchase_count }}{{ fruit.unit }} · {{ statusLabel(fruit.stock_status) }}</view>
           <view class="price-line">
             <text class="item-price">¥{{ money(fruit.quote?.normal_price) }}</text>
-            <text class="verified-price">认证价 {{ displayVerifiedPrice(fruit.quote?.verified_price) }}</text>
+            <text v-if="flags.verification_enabled" class="verified-price">认证价 {{ displayVerifiedPrice(fruit.quote?.verified_price) }}</text>
           </view>
         </view>
         <view class="item-add" @tap.stop="addToCart(fruit)">

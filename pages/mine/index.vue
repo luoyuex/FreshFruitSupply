@@ -6,6 +6,7 @@ import { request } from '../../utils/request.js'
 import { hasCustomerLogin, isPlaceholderPhone, loginWithWeChat, logoutCustomer } from '../../utils/auth.js'
 import { openAdminHome } from '../../utils/admin.js'
 import { refreshCustomTabBar } from '../../utils/tabBar.js'
+import { flags } from '../../utils/flags.js'
 
 const phone = shallowRef(uni.getStorageSync('customer_phone') || '')
 const customer = shallowRef(null)
@@ -219,7 +220,7 @@ defineExpose({
       <view class="profile-main">
         <view class="name-row">
           <text class="shop-name">{{ displayName }}</text>
-          <button class="verify-badge" @tap.stop="goVerify">{{ statusLabel(customer?.verification_status || 'unverified') }} ›</button>
+          <button v-if="flags.verification_enabled" class="verify-badge" @tap.stop="goVerify">{{ statusLabel(customer?.verification_status || 'unverified') }} ›</button>
         </view>
         <view class="account">{{ isLoggedIn ? (phone ? `账号名：${phone}` : '已登录，手机号可选绑定') : '点击登录后查看个人信息' }}</view>
       </view>
@@ -274,7 +275,7 @@ defineExpose({
         <image class="tool-icon" src="/static/icons/map-pin-dark.svg" mode="aspectFit" />
         <text>地址管理</text>
       </view>
-      <view class="tool" @tap="goVerify">
+      <view v-if="flags.verification_enabled" class="tool" @tap="goVerify">
         <image class="tool-icon" src="/static/icons/badge-check.svg" mode="aspectFit" />
         <text>认证资料</text>
       </view>

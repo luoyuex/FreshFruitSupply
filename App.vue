@@ -1,8 +1,11 @@
 <script setup>
 import { onHide, onLaunch, onShow } from '@dcloudio/uni-app'
+import { loadClientFlags } from './utils/flags.js'
 
 onLaunch(() => {
   console.log('Fruit quote app launch')
+  // 拉取功能开关（认证等），失败沿用本地缓存
+  loadClientFlags()
 })
 
 onShow(() => {

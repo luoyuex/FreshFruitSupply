@@ -6,6 +6,7 @@ import { fruitIcon, money, statusLabel } from '../../utils/format.js'
 import { request } from '../../utils/request.js'
 import { addCartItem, cartCount } from '../../utils/cart.js'
 import { hasCustomerLogin } from '../../utils/auth.js'
+import { flags } from '../../utils/flags.js'
 import { categoryIconPath } from '../../utils/categoryIcons.js'
 import { refreshCustomTabBar } from '../../utils/tabBar.js'
 
@@ -21,7 +22,8 @@ const VERIFY_POSTER_KEY = 'verify_poster_dismissed_at'
 const VERIFY_POSTER_COOLDOWN = 3 * 24 * 60 * 60 * 1000 // 3 days in ms
 
 const isVerified = computed(() => customer.value?.verification_status === 'verified')
-const showVerifyGuide = computed(() => !isVerified.value)
+// 认证功能由后端开关控制：关闭时隐藏认证引导与海报弹窗
+const showVerifyGuide = computed(() => flags.verification_enabled && !isVerified.value)
 const featuredFruits = computed(() => fruits.value.slice(0, 4))
 const fruitCategories = computed(() => categoryItems.value.slice(0, 8))
 
@@ -46,6 +48,8 @@ async function loadCustomer() {
 }
 
 function shouldShowVerifyPoster() {
+  // 认证功能关闭时不弹
+  if (!flags.verification_enabled) return false
   // 已认证的不弹
   if (isVerified.value) return false
   const dismissed = uni.getStorageSync(VERIFY_POSTER_KEY)
@@ -146,7 +150,7 @@ onPullDownRefresh(async () => {
 
 function onShareAppMessage() {
   return {
-    title: '珍果链 - 优质水果批发',
+    title: '珍果链 - 新鲜水果次日达',
     path: '/pages/index/index',
     imageUrl: ''
   }
@@ -154,7 +158,7 @@ function onShareAppMessage() {
 
 function onShareTimeline() {
   return {
-    title: '珍果链 - 优质水果批发',
+    title: '珍果链 - 新鲜水果次日达',
     query: '',
     imageUrl: ''
   }
@@ -236,7 +240,7 @@ defineExpose({
         <view class="goods-bottom">
           <view class="price-stack">
             <text class="goods-price">¥{{ money(fruit.quote?.normal_price) }}</text>
-            <text class="verified-price">认证价 {{ displayVerifiedPrice(fruit.quote?.verified_price) }}</text>
+            <text v-if="flags.verification_enabled" class="verified-price">认证价 {{ displayVerifiedPrice(fruit.quote?.verified_price) }}</text>
           </view>
           <view class="plus" @tap.stop="addToCart(fruit)"><view class="plus-line horizontal"></view><view class="plus-line vertical"></view></view>
         </view>

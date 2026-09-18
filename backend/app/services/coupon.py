@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models import CouponTemplate, Customer, CustomerCoupon, Order
 
 
@@ -40,6 +41,9 @@ def grant_coupons_on_verified(db: Session, customer: Customer) -> list[CustomerC
     幂等：按模板的 per_customer_limit 限制每人持有数量（统计历史累计发放数，
     因此认证再次通过也不会重复发放）。调用方负责随后 commit。
     """
+    # 认证功能关闭（快速上线期）：不发认证券，恢复开关后自动生效
+    if not settings.verification_enabled:
+        return []
     granted: list[CustomerCoupon] = []
     templates = (
         db.query(CouponTemplate)

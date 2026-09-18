@@ -4,6 +4,7 @@ import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { statusLabel } from '../../utils/format.js'
 import { request, uploadAvatar } from '../../utils/request.js'
 import { hasCustomerLogin, isPlaceholderPhone } from '../../utils/auth.js'
+import { flags } from '../../utils/flags.js'
 
 const phone = shallowRef(uni.getStorageSync('customer_phone') || '')
 const customer = shallowRef(null)
@@ -164,7 +165,7 @@ onPullDownRefresh(async () => {
       <button class="save-btn" :loading="saving" @tap="saveProfile">保存用户信息</button>
     </view>
 
-    <view class="info-card">
+    <view v-if="flags.verification_enabled" class="info-card">
       <view class="section-title">认证信息</view>
       <view class="info-row">
         <text class="info-label">认证状态</text>

@@ -1,6 +1,6 @@
 export function getShareOptions(shareConfig = {}) {
   const defaultConfig = {
-    title: '珍果链 - 优质水果批发',
+    title: '珍果链 - 新鲜水果次日达',
     path: '/pages/index/index',
     imageUrl: '',
     query: ''

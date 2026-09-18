@@ -5,6 +5,7 @@ import { clearSelectedCartItems, getCartItems, removeCartItem, updateCartItem } 
 import { money, statusLabel } from '../../utils/format.js'
 import { request } from '../../utils/request.js'
 import { refreshCustomTabBar } from '../../utils/tabBar.js'
+import { flags } from '../../utils/flags.js'
 
 const items = ref([])
 const verified = shallowRef(false)
@@ -14,7 +15,8 @@ const managing = shallowRef(false)
 const selectedItems = computed(() => items.value.filter((item) => item.selected))
 const allSelected = computed(() => items.value.length > 0 && selectedItems.value.length === items.value.length)
 const total = computed(() => selectedItems.value.reduce((sum, item) => {
-  const price = Number(verified.value ? item.verified_price : item.normal_price)
+  // 认证功能关闭时一律按普通价（与后端计价口径一致）
+  const price = Number((verified.value && flags.verification_enabled) ? item.verified_price : item.normal_price)
   return sum + price * Number(item.quantity || 0)
 }, 0))
 
@@ -197,7 +199,7 @@ defineExpose({
       <view v-else></view>
     </view>
 
-    <view v-if="!verified" class="auth-strip">
+    <view v-if="flags.verification_enabled && !verified" class="auth-strip">
       <text>认证店铺信息可享超低价及新人礼包</text>
       <button class="auth-btn" @tap="goVerify">去认证</button>
     </view>
@@ -222,7 +224,7 @@ defineExpose({
         <view class="goods-info">
           <view class="goods-name">{{ item.name }}</view>
           <view class="goods-spec">{{ item.spec }}</view>
-          <view class="goods-price">¥{{ money((verified ? item.verified_price : item.normal_price) * item.quantity) }}</view>
+          <view class="goods-price">¥{{ money(((verified && flags.verification_enabled) ? item.verified_price : item.normal_price) * item.quantity) }}</view>
           <view class="stock">{{ statusLabel(item.stock_status) }}</view>
         </view>
         <view class="stepper">

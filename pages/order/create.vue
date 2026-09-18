@@ -7,6 +7,7 @@ import { couponDiscount, isCouponUsable, isReissueCoupon, pickBestCoupon } from 
 import { request } from '../../utils/request.js'
 import { startPayment } from '../../utils/pay.js'
 import { hasCustomerLogin, isPlaceholderPhone, loginWithWeChat } from '../../utils/auth.js'
+import { flags } from '../../utils/flags.js'
 
 const orderItems = ref([])
 const customer = shallowRef(null)
@@ -74,8 +75,9 @@ const addressSummary = computed(() => {
   }
 })
 
+// 认证功能关闭时一律按普通价（与后端计价口径一致）
 function activePrice(item) {
-  return Number((isVerified.value ? item.verified_price : item.normal_price) || 0)
+  return Number(((flags.verification_enabled && isVerified.value) ? item.verified_price : item.normal_price) || 0)
 }
 
 function displayVerifiedPrice(price) {
@@ -89,7 +91,7 @@ function primaryImage(fruit) {
 
 function normalizeFruit(fruit, quantity) {
   const quote = fruit.quote || {}
-  const price = isVerified.value ? quote.verified_price : quote.normal_price
+  const price = (flags.verification_enabled && isVerified.value) ? quote.verified_price : quote.normal_price
   return {
     id: fruit.id,
     name: fruit.name,
@@ -121,7 +123,7 @@ function normalizeOrderItem(item) {
 function normalizeCartItem(item) {
   const normal = item.normal_price ?? item.quote?.normal_price ?? 0
   const verified = item.verified_price ?? item.quote?.verified_price ?? normal
-  const price = isVerified.value ? verified : normal
+  const price = (flags.verification_enabled && isVerified.value) ? verified : normal
   return {
     id: item.id,
     name: item.name,
@@ -523,7 +525,7 @@ async function submitNewOrder() {
     })
     return
   }
-  finishAndLeave('下单成功', '已收到你的付款，供应商会尽快确认库存并安排配送。')
+  finishAndLeave('下单成功', '已收到你的付款，商家会尽快确认库存并安排配送。')
 }
 
 async function submitEditOrder() {
@@ -702,7 +704,7 @@ onPullDownRefresh(async () => {
         <view class="selected-contact">{{ addressSummary.contact || '已选择配送地址' }}</view>
         <view class="selected-full">{{ addressSummary.full }}</view>
       </view>
-      <input v-model="form.customerPhone" class="input" type="number" placeholder="下单手机号，用于识别认证价" @blur="loadCustomer" />
+      <input v-model="form.customerPhone" class="input" type="number" placeholder="下单手机号，选填" @blur="loadCustomer" />
       <input v-model="form.receiverName" class="input" placeholder="收货人姓名" />
       <input v-model="form.receiverPhone" class="input" type="number" placeholder="收货手机号" />
       <view class="address-grid">
@@ -710,7 +712,7 @@ onPullDownRefresh(async () => {
         <input v-model="form.city" class="input" placeholder="市" />
         <input v-model="form.district" class="input" placeholder="区/县" />
       </view>
-      <textarea v-model="form.detailAddress" class="textarea" placeholder="详细地址，例如市场、门店、档口号" />
+      <textarea v-model="form.detailAddress" class="textarea" placeholder="详细地址，例如小区、门店、门牌号" />
       <textarea v-model="form.deliveryNote" class="textarea" placeholder="配送备注，例如到货时间、卸货位置，可不填" />
     </view>
 
@@ -746,7 +748,7 @@ onPullDownRefresh(async () => {
               <view class="picker-spec">{{ fruit.origin || fruit.category }} · {{ fruit.spec }} / {{ fruit.unit }}</view>
               <view class="picker-price">
                 普通 ¥{{ money(fruit.quote?.normal_price || 0) }}
-                <text>认证 {{ displayVerifiedPrice(fruit.quote?.verified_price || fruit.quote?.normal_price || 0) }}</text>
+                <text v-if="flags.verification_enabled">认证 {{ displayVerifiedPrice(fruit.quote?.verified_price || fruit.quote?.normal_price || 0) }}</text>
               </view>
             </view>
             <button class="picker-add" :disabled="fruit.stock_status === 'out_of_stock'">{{ fruit.stock_status === 'out_of_stock' ? '售罄' : '加入' }}</button>

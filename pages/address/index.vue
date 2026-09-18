@@ -344,7 +344,7 @@ onPullDownRefresh(async () => {
           <input v-model="form.city" class="input" placeholder="市" />
           <input v-model="form.district" class="input" placeholder="区/县" />
         </view>
-        <textarea v-model="form.detailAddress" class="textarea" placeholder="详细地址，例如市场、门店、档口号" />
+        <textarea v-model="form.detailAddress" class="textarea" placeholder="详细地址，例如小区、门店、门牌号" />
         <textarea v-model="form.deliveryNote" class="textarea" placeholder="配送备注，可不填" />
         <view class="switch-row">
           <text>设为默认地址</text>

@@ -3,6 +3,7 @@ import { computed, reactive, shallowRef } from 'vue'
 import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { request, uploadVerification } from '../../utils/request.js'
 import { hasCustomerLogin, loginWithWeChat, isPlaceholderPhone } from '../../utils/auth.js'
+import { flags } from '../../utils/flags.js'
 import { statusLabel } from '../../utils/format.js'
 
 const loading = shallowRef(false)
@@ -186,7 +187,14 @@ async function submitVerification() {
   }
 }
 
-onShow(loadVerification)
+onShow(() => {
+  // 认证功能关闭（快速上线期）：页面无入口，从历史分享/收藏进入时直接送回首页
+  if (!flags.verification_enabled) {
+    uni.switchTab({ url: '/pages/index/index' })
+    return
+  }
+  loadVerification()
+})
 
 onPullDownRefresh(async () => {
   try {

@@ -5,6 +5,7 @@ import { addCartItem, cartCount } from '../../utils/cart.js'
 import { fruitIcon, money, statusLabel } from '../../utils/format.js'
 import { request } from '../../utils/request.js'
 import { hasCustomerLogin } from '../../utils/auth.js'
+import { flags } from '../../utils/flags.js'
 
 const fruitId = shallowRef('')
 const fruit = shallowRef(null)
@@ -26,7 +27,8 @@ const allPreviewImages = computed(() => [...galleryImageUrls.value, ...detailIma
 const isVerified = computed(() => customer.value?.verification_status === 'verified')
 const normalPrice = computed(() => Number(fruit.value?.quote?.normal_price || 0))
 const verifiedPrice = computed(() => Number(fruit.value?.quote?.verified_price || 0))
-const activePrice = computed(() => isVerified.value ? verifiedPrice.value : normalPrice.value)
+// 认证功能关闭时一律按普通价展示（与后端计价口径一致）
+const activePrice = computed(() => (flags.verification_enabled && isVerified.value) ? verifiedPrice.value : normalPrice.value)
 const estimatedTotal = computed(() => activePrice.value * Number(quantity.value || 0))
 
 function displayVerifiedPrice(price) {
@@ -118,7 +120,7 @@ onPullDownRefresh(async () => {
 
 function onShareAppMessage() {
   return {
-    title: fruit.value ? `${fruit.value.name} - 珍果链` : '珍果链 - 优质水果批发',
+    title: fruit.value ? `${fruit.value.name} - 珍果链` : '珍果链 - 新鲜水果次日达',
     path: `/pages/product/detail?id=${fruitId.value}`,
     imageUrl: coverUrl.value || ''
   }
@@ -126,7 +128,7 @@ function onShareAppMessage() {
 
 function onShareTimeline() {
   return {
-    title: fruit.value ? `${fruit.value.name} - 珍果链 - 优质水果批发` : '珍果链 - 优质水果批发',
+    title: fruit.value ? `${fruit.value.name} - 珍果链 - 新鲜水果次日达` : '珍果链 - 新鲜水果次日达',
     query: `id=${fruitId.value}`,
     imageUrl: coverUrl.value || ''
   }
@@ -161,12 +163,12 @@ defineExpose({
           <text class="price-label">普通价</text>
           <text class="price">¥{{ money(normalPrice) }}/{{ fruit?.unit || '斤' }}</text>
         </view>
-        <view class="price-box verified">
+        <view v-if="flags.verification_enabled" class="price-box verified">
           <text class="price-label">认证价</text>
           <text class="price">{{ displayVerifiedPrice(verifiedPrice) }}/{{ fruit?.unit || '斤' }}</text>
         </view>
       </view>
-      <view class="auth-tip" @tap="goVerify">
+      <view v-if="flags.verification_enabled" class="auth-tip" @tap="goVerify">
         {{ isVerified ? '你已是认证客户，本单按认证价预估' : '认证店铺后可按认证价购买，点击去认证 ›' }}
       </view>
     </view>
@@ -175,7 +177,7 @@ defineExpose({
       <view class="section-title">商品说明</view>
       <view class="detail-line">起订量：{{ fruit?.quote?.min_order_quantity || 1 }}{{ fruit?.unit || '' }}</view>
       <view class="detail-line">价格说明：行情波动较快，每日价格可能会有调整。</view>
-      <view class="detail-line">商品备注：{{ fruit?.quote?.note || '支持批发，每天22:00前下单，次日10:00前送达。' }}</view>
+      <view class="detail-line">商品备注：{{ fruit?.quote?.note || '每天22:00前下单，次日10:00前送达。' }}</view>
     </view>
 
     <view v-if="detailImageUrls.length" class="image-detail-card">

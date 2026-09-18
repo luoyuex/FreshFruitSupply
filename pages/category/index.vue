@@ -6,6 +6,7 @@ import { addCartItem, cartCount } from '../../utils/cart.js'
 import { fruitIcon, money, statusLabel } from '../../utils/format.js'
 import { request } from '../../utils/request.js'
 import { hasCustomerLogin } from '../../utils/auth.js'
+import { flags } from '../../utils/flags.js'
 import { refreshCustomTabBar } from '../../utils/tabBar.js'
 
 const { loading, error, keyword, activeCategory, categoryItems, categories, visibleFruits, loadFruits } = useFruitQuotes()
@@ -270,7 +271,7 @@ defineExpose({
                 <view class="goods-status">{{ statusLabel(fruit.stock_status) }} · 起订 {{ fruit.quote?.min_order_quantity }}{{ fruit.unit }}</view>
                 <view class="price-line">
                   <text class="goods-price">¥{{ money(fruit.quote?.normal_price) }}</text>
-                  <text class="verified-price">认证价 {{ displayVerifiedPrice(fruit.quote?.verified_price) }}</text>
+                  <text v-if="flags.verification_enabled" class="verified-price">认证价 {{ displayVerifiedPrice(fruit.quote?.verified_price) }}</text>
                 </view>
               </view>
               <view class="add" @tap.stop="addToCart(fruit)"><view class="add-line horizontal"></view><view class="add-line vertical"></view></view>

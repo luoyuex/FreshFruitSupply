@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     wechat_pay_mock: bool = True
     # 待支付订单超时自动关闭时长（分钟）
     order_unpaid_timeout_minutes: int = 15
+    # 店铺认证功能开关：关闭时 C 端隐藏认证入口、计价一律走普通价、提交认证接口返回 403。
+    # 快速上线验证期关闭；后续放开改 .env 即可，前端经 /api/config/client 自动感知、无需发版
+    verification_enabled: bool = True
 
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
 
