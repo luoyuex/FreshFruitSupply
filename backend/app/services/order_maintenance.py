@@ -16,6 +16,8 @@ import asyncio
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from fastapi import HTTPException
+
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models import Order, OrderPayment
@@ -94,8 +96,11 @@ def cancel_order(db: Session, order: Order) -> Decimal:
         refund_order(db, order)
         order.status = CANCELLED_STATUS
     else:
+        if not _close_pending_payments(db, order):
+            # 微信侧查单确认已支付：不能按未支付关单，否则会出现「本地已关、钱还没退」的脱节窗口。
+            # 交给支付回调/主动查单结算（会自动原路退回），调用方收到报错后让用户稍后再试。
+            raise HTTPException(status_code=409, detail='订单支付状态确认中，请稍后再试或联系客服')
         refunded_amount = Decimal('0')
-        _close_pending_payments(db, order)
         order.status = CLOSED_STATUS
     release_order_coupons(db, order)
     return refunded_amount
