@@ -7,6 +7,7 @@ import { payOrder } from './pay.js'
 
 export function createOrderActions({ onChanged } = {}) {
   const paying = ref(false)
+  const cancelling = ref(false)
 
   async function reload() {
     if (onChanged) await onChanged()
@@ -44,12 +45,19 @@ export function createOrderActions({ onChanged } = {}) {
         : '确认取消该待支付订单？',
       success: async (res) => {
         if (!res.confirm) return
+        if (cancelling.value) return
+        cancelling.value = true
+        uni.showLoading({ title: paid ? '退款处理中...' : '取消中...', mask: true })
         try {
           await request({ url: `/orders/${order.id}/cancel`, method: 'POST' })
+          uni.hideLoading()
           uni.showToast({ title: paid ? '已取消，退款处理中' : '订单已取消', icon: 'none' })
           await reload()
         } catch (err) {
+          uni.hideLoading()
           uni.showToast({ title: err.message || '取消失败', icon: 'none' })
+        } finally {
+          cancelling.value = false
         }
       },
     })
@@ -72,5 +80,5 @@ export function createOrderActions({ onChanged } = {}) {
     return `${order.province || ''}${order.city || ''}${order.district || ''}${order.detail_address || ''}`
   }
 
-  return { paying, payOrderNow, cancelOrder, canCancel, orderEditReason, addressText }
+  return { paying, cancelling, payOrderNow, cancelOrder, canCancel, orderEditReason, addressText }
 }
