@@ -78,9 +78,10 @@ def _close_pending_payments(db: Session, order: Order) -> bool:
 
 
 def _is_paid_at_wechat(out_trade_no: str) -> bool:
-    """关单失败时查单确认是否已支付——已支付则不能再关单，应由回调/主动查单结算。"""
+    """查单确认微信侧是否已支付；查询失败视为未确认（调用方按不能关单处理）。"""
+
     try:
-        return wechatpay.query_order(out_trade_no).get('trade_state') == 'SUCCESS'
+        return wechatpay.query_order(out_trade_no).get('pay_status') == 'ORDER_PAY_SUCC'
     except Exception:
         return False
 
