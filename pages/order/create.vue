@@ -5,7 +5,7 @@ import { clearSelectedCartItems } from '../../utils/cart.js'
 import { dateText, fruitIcon, money } from '../../utils/format.js'
 import { couponDiscount, isCouponUsable, isReissueCoupon, pickBestCoupon } from '../../utils/coupon.js'
 import { request } from '../../utils/request.js'
-import { startPayment } from '../../utils/pay.js'
+import { startPayment, getWxLoginCode } from '../../utils/pay.js'
 import { hasCustomerLogin, isPlaceholderPhone, loginWithWeChat } from '../../utils/auth.js'
 import { flags } from '../../utils/flags.js'
 
@@ -530,7 +530,15 @@ async function submitNewOrder() {
 
 async function submitEditOrder() {
   // 编辑只增不减：应付上升则返回补差价支付参数，支付成功后变更才生效
-  const result = await request({ url: `/orders/${editingOrderId.value}`, method: 'PATCH', data: buildOrderData() })
+  // 后端可能需要现场生成 B2b 支付签名，携带最新 wx.login code
+  const data = buildOrderData()
+  try {
+    data.wx_login_code = await getWxLoginCode()
+  } catch (err) {
+    uni.showToast({ title: err.message || '微信登录失败', icon: 'none' })
+    return
+  }
+  const result = await request({ url: `/orders/${editingOrderId.value}`, method: 'PATCH', data })
   if (!result.need_payment) {
     uni.showModal({
       title: '订单已修改',

@@ -23,19 +23,14 @@ class Settings(BaseSettings):
     order_notify_email: str = ''
     wechat_appid: str = ''
     wechat_secret: str = ''
-    # 微信支付（小程序 JSAPI）商户配置；未配齐时配合 wechat_pay_mock 走模拟支付
-    wechat_mchid: str = ''
-    wechat_pay_api_v3_key: str = ''
-    wechat_pay_cert_serial: str = ''
-    # 商户 API 证书私钥（apiclient_key.pem）路径，用于给发往微信的请求签名
-    wechat_pay_private_key_path: str = ''
-    # 微信支付公钥（pub_key.pem）路径与其公钥 ID（PUB_KEY_ID_ 前缀），用于回调验签
-    # 与平台证书模式二选一；两者都配则优先用公钥，未配时回退平台证书
-    wechat_pay_public_key_path: str = ''
-    wechat_pay_public_key_id: str = ''
-    wechat_pay_notify_url: str = ''
-    # 退款结果回调地址（可选）；不填则退款按“受理成功”直接记账
-    wechat_pay_refund_notify_url: str = ''
+    # 微信支付（B2b 门店助手 · wx.requestCommonPayment）：
+    # 商户号为门店助手-支付管理申请的商户号；签名用 AppKey（HMAC），不使用 APIv3 密钥/证书
+    wechat_pay_mchid: str = ''
+    wechat_pay_env: int = 0  # 0 现网 / 1 沙箱（沙箱仅开发版/体验版可用，正式版必须 0）
+    wechat_pay_appkey: str = ''
+    wechat_pay_sandbox_appkey: str = ''
+    # 小程序「消息推送」配置的 Token：用于支付/退款通知（retail_pay_notify 等）验签与 URL 校验
+    wechat_b2b_msg_token: str = ''
     # Mock 模式：不调用真实微信支付 API，用开发接口模拟支付成功，便于凭证到位前联调
     wechat_pay_mock: bool = True
     # 待支付订单超时自动关闭时长（分钟）

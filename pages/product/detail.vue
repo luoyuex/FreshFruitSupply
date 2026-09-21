@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, shallowRef } from 'vue'
 import { onLoad, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { addCartItem, cartCount } from '../../utils/cart.js'
-import { fruitIcon, money, qtyText, statusLabel } from '../../utils/format.js'
+import { fruitIcon, money, statusLabel } from '../../utils/format.js'
 import { request } from '../../utils/request.js'
 import { hasCustomerLogin } from '../../utils/auth.js'
 import { flags } from '../../utils/flags.js'
@@ -175,7 +175,6 @@ defineExpose({
 
     <view class="detail-card">
       <view class="section-title">商品说明</view>
-      <view class="detail-line">起订量：{{ qtyText(fruit?.quote?.min_order_quantity || 1) }}{{ fruit?.unit || '' }}</view>
       <view class="detail-line">价格说明：行情波动较快，每日价格可能会有调整。</view>
       <view class="detail-line">商品备注：{{ fruit?.quote?.note || '每天22:00前下单，次日10:00前送达。' }}</view>
     </view>

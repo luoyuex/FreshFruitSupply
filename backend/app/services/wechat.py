@@ -1,10 +1,15 @@
 import json
+import time
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from fastapi import HTTPException
 
 from app.core.config import settings
+
+# access_token 进程内缓存：官方限额内避免每次支付查单都刷新 token
+_access_token_cache: str = ''
+_access_token_expire_at: float = 0.0
 
 
 def _request_json(url: str, method: str = 'GET', payload: dict | None = None) -> dict:
@@ -39,6 +44,10 @@ def code_to_session(code: str) -> dict:
 
 
 def get_access_token() -> str:
+    """获取小程序接口调用凭证，带进程内缓存（提前 5 分钟过期）。"""
+    global _access_token_cache, _access_token_expire_at
+    if _access_token_cache and time.time() < _access_token_expire_at:
+        return _access_token_cache
     _ensure_wechat_config()
     query = urlencode({
         'grant_type': 'client_credential',
@@ -51,4 +60,6 @@ def get_access_token() -> str:
     token = data.get('access_token')
     if not token:
         raise HTTPException(status_code=400, detail='WeChat did not return access_token')
+    _access_token_cache = token
+    _access_token_expire_at = time.time() + max(60, int(data.get('expires_in', 7200)) - 300)
     return token

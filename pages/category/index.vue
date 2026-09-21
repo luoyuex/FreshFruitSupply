@@ -3,7 +3,7 @@ import { computed, getCurrentInstance, nextTick, onMounted, shallowRef, watch } 
 import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { useFruitQuotes } from '../../composables/useFruitQuotes.js'
 import { addCartItem, cartCount } from '../../utils/cart.js'
-import { fruitIcon, money, qtyText, statusLabel } from '../../utils/format.js'
+import { fruitIcon, money, statusLabel } from '../../utils/format.js'
 import { request } from '../../utils/request.js'
 import { hasCustomerLogin } from '../../utils/auth.js'
 import { flags } from '../../utils/flags.js'
@@ -266,9 +266,9 @@ defineExpose({
                 </view>
               </view>
               <view class="goods-info">
-                <view class="goods-name">{{ fruit.name }} {{ fruit.spec }}</view>
+                <view class="goods-name">{{ fruit.name }}</view>
                 <view v-if="productDesc(fruit)" class="goods-desc">{{ productDesc(fruit) }}</view>
-                <view class="goods-status">{{ statusLabel(fruit.stock_status) }} · 起订 {{ qtyText(fruit.quote?.min_order_quantity) }}{{ fruit.unit }}</view>
+                <view class="goods-status">{{ statusLabel(fruit.stock_status) }}</view>
                 <view class="price-line">
                   <text class="goods-price">¥{{ money(fruit.quote?.normal_price) }}</text>
                   <text v-if="flags.verification_enabled" class="verified-price">认证价 {{ displayVerifiedPrice(fruit.quote?.verified_price) }}</text>

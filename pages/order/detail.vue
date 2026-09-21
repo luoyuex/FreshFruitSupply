@@ -137,7 +137,7 @@ onPullDownRefresh(async () => {
           />
           <view v-else class="item-img item-img-placeholder" />
           <view class="item-main">
-            <view class="item-name">{{ item.fruit_name }} {{ item.spec }}</view>
+            <view class="item-name">{{ item.fruit_name }}</view>
             <view class="item-qty">x{{ item.quantity }}{{ item.unit }}</view>
           </view>
           <text class="item-money">¥{{ money(item.subtotal) }}</text>

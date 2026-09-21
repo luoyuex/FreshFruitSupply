@@ -138,7 +138,7 @@ onPullDownRefresh(async () => {
 
       <view class="items">
         <view v-for="item in order.items" :key="item.id" class="item-row">
-          <text class="item-name">{{ item.fruit_name }} {{ item.spec }}</text>
+          <text class="item-name">{{ item.fruit_name }}</text>
           <text class="item-qty">x{{ item.quantity }}{{ item.unit }}</text>
           <text class="item-money">¥{{ money(item.subtotal) }}</text>
         </view>

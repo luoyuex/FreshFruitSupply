@@ -189,7 +189,7 @@ defineExpose({
           </view>
         </view>
         <view class="item-info">
-          <view class="item-name">{{ fruit.fruit_name }} {{ fruit.spec }}</view>
+          <view class="item-name">{{ fruit.fruit_name }}</view>
           <view class="item-stat">已购 {{ fruit.purchase_count }}{{ fruit.unit }} · {{ statusLabel(fruit.stock_status) }}</view>
           <view class="price-line">
             <text class="item-price">¥{{ money(fruit.quote?.normal_price) }}</text>

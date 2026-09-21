@@ -171,6 +171,8 @@ class OrderCreate(BaseModel):
     coupon_id: int | None = None
     # 商品补送券可叠加多张，与满减券互不影响，仅作配货标记不参与实付计算
     reissue_coupon_ids: List[int] = Field(default_factory=list)
+    # 编辑订单需补差价时，用最新 wx.login code 现场换 session_key 生成支付签名（可选）
+    wx_login_code: str | None = None
 
 
 class OrderItemOut(BaseModel):
@@ -228,15 +230,20 @@ class OrderOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class PaymentParams(BaseModel):
-    """透传给小程序 uni.requestPayment 的支付参数（Mock 模式带 mock 标记）。"""
-    timeStamp: str
-    nonceStr: str
-    package: str
-    signType: str = 'RSA'
-    paySign: str
+class CommonPayParams(BaseModel):
+    """透传给小程序 wx.requestCommonPayment 的支付参数（Mock 模式带 mock 标记）。"""
+    signData: str = ''
+    mode: str = 'retail_pay_goods'
+    paySig: str = ''
+    signature: str = ''
+    # Mock 模式保留旧字段，前端据此走 mock-success 联调接口
     mock: bool = False
     out_trade_no: str | None = None
+    timeStamp: str = ''
+    nonceStr: str = ''
+    package: str = ''
+    signType: str = 'RSA'
+    paySign: str = ''
 
 
 class PayResponse(BaseModel):
@@ -244,7 +251,7 @@ class PayResponse(BaseModel):
     order_id: int
     out_trade_no: str
     amount: Decimal
-    pay_params: PaymentParams
+    pay_params: CommonPayParams
 
 
 class OrderEditResult(BaseModel):

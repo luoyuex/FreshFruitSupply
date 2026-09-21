@@ -1,8 +1,11 @@
+import hashlib
 import json
 from datetime import datetime, time
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
@@ -11,18 +14,41 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.models import Announcement, Customer, CustomerAddress, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, OrderItem, OrderPayment
 from app.models.domain import CHINA_TZ
-from app.schemas import AnnouncementFeedOut, AnnouncementOut, AnnouncementReadOut, CustomerAddressOut, CustomerAddressUpsert, CustomerCouponOut, CustomerOut, CustomerProfileUpdate, DeliveryConfigOut, FrequentItemOut, FruitCategoryOut, FruitOut, MockPaySuccessIn, OrderCreate, OrderEditResult, OrderOut, PaymentParams, PayResponse, QuoteOut, VerificationOut
+from app.schemas import AnnouncementFeedOut, AnnouncementOut, AnnouncementReadOut, CommonPayParams, CustomerAddressOut, CustomerAddressUpsert, CustomerCouponOut, CustomerOut, CustomerProfileUpdate, DeliveryConfigOut, FrequentItemOut, FruitCategoryOut, FruitOut, MockPaySuccessIn, OrderCreate, OrderEditResult, OrderOut, PayResponse, QuoteOut, VerificationOut
 from app.services.coupon import attach_reissue_coupons, compute_discount, effective_coupon_status, grant_coupons_on_verified, release_order_coupons
 from app.services.customer import get_or_create_customer
 from app.services.settings import compute_delivery_fee, get_delivery_config
 from app.services.email import send_order_email, send_order_refund_email
 from app.services.upload import save_upload, to_public_urls
-from app.services.wechatpay import close_order, create_jsapi_payment, generate_out_trade_no, is_mock, query_order, refund, verify_and_parse_notify
+from app.services.wechat import code_to_session
+from app.services.wechatpay import close_order, create_common_payment, generate_out_trade_no, is_mock, query_order, refund
 from app.services.order_maintenance import cancel_order
 
 router = APIRouter()
 ORDER_EDIT_CUTOFF = time(22, 0)
 EDITABLE_ORDER_STATUSES = {'pending', 'confirmed'}
+
+
+class PayRequestIn(BaseModel):
+    """发起支付请求体：真实模式需携带最新 wx.login code，后端现场换 session_key 做用户态签名。"""
+    wx_login_code: str | None = None
+
+
+def _session_key_for_pay(customer: Customer, wx_login_code: str | None) -> str:
+    """B2b 支付用户态签名用的 session_key：用最新 wx.login code 现场换取。
+
+    校验 openid 归属当前客户，防止拿别人的 code 签名；Mock 模式直接放行。
+    """
+    if is_mock():
+        return ''
+    if not wx_login_code:
+        raise HTTPException(status_code=400, detail='缺少微信登录凭证，请重试支付')
+    session = code_to_session(wx_login_code)
+    if session.get('openid') != customer.wechat_openid:
+        raise HTTPException(status_code=403, detail='登录状态异常，请重新登录后再支付')
+    return session.get('session_key') or ''
+
+
 # 支付流水的终态：回调「幂等」判定用，避免重复回调重复退款/重复累加已付
 SETTLED_PAYMENT_STATUSES = {'success', 'refunded', 'refund_failed'}
 
@@ -708,10 +734,11 @@ def create_order(
 @router.post('/orders/{order_id}/pay', response_model=PayResponse)
 def pay_order(
     order_id: int,
+    payload: PayRequestIn | None = None,
     db: Session = Depends(get_db),
     auth_customer: Customer | None = Depends(get_optional_auth_customer),
 ):
-    """为待支付订单发起（或复用）首付支付，返回小程序拉起支付所需参数。"""
+    """为待支付订单发起（或复用）支付，返回小程序 wx.requestCommonPayment 所需参数。"""
     customer = _current_customer_or_401(auth_customer)
     order = (
         db.query(Order)
@@ -729,7 +756,7 @@ def pay_order(
 
     payment = _reusable_pending_payment(db, order, 'initial')
     if payment is not None and payment.amount != amount:
-        # 应付已变化：作废旧流水并关闭微信侧预支付单，否则旧金额的 prepay_id 仍可被支付
+        # 应付已变化：作废旧流水并关闭微信侧订单，否则旧金额的订单仍可被支付
         close_order(payment.out_trade_no)
         payment.status = 'cancelled'
         payment = None
@@ -738,13 +765,14 @@ def pay_order(
         db.add(payment)
         db.flush()
 
-    pay_params = create_jsapi_payment(payment, customer.wechat_openid or '')
+    session_key = _session_key_for_pay(customer, payload.wx_login_code if payload else None)
+    pay_params = create_common_payment(payment, session_key)
     db.commit()
     return PayResponse(
         order_id=order.id,
         out_trade_no=payment.out_trade_no,
         amount=payment.amount,
-        pay_params=PaymentParams(out_trade_no=payment.out_trade_no, **pay_params) if 'out_trade_no' not in pay_params else PaymentParams(**pay_params),
+        pay_params=CommonPayParams(out_trade_no=payment.out_trade_no, **pay_params),
     )
 
 
@@ -805,57 +833,54 @@ async def _settle_successful_payment(db: Session, payment: OrderPayment, transac
     db.commit()
 
 
-@router.post('/payments/wechat/notify')
-async def wechat_pay_notify(request: Request, db: Session = Depends(get_db)):
-    """微信支付结果回调：验签解密 → 定位流水 → 结算。返回微信要求的应答格式。"""
-    body = await request.body()
-    try:
-        result = verify_and_parse_notify(dict(request.headers), body)
-    except Exception:
-        # 验签/解密失败，让微信重试
-        return {'code': 'FAIL', 'message': '验签失败'}
-
-    out_trade_no = result.get('out_trade_no')
-    trade_state = result.get('trade_state')
-    transaction_id = result.get('transaction_id')
-    if not out_trade_no:
-        return {'code': 'FAIL', 'message': '缺少订单号'}
-    payment = db.query(OrderPayment).filter(OrderPayment.out_trade_no == out_trade_no).first()
-    if not payment:
-        return {'code': 'FAIL', 'message': '流水不存在'}
-    if trade_state == 'SUCCESS':
-        await _settle_successful_payment(db, payment, transaction_id)
-    return {'code': 'SUCCESS', 'message': '成功'}
+def _b2b_msg_signature_ok(signature: str | None, timestamp: str | None, nonce: str | None) -> bool:
+    """小程序消息推送的 URL 校验/验签：sha1(sort(token, timestamp, nonce))。"""
+    token = settings.wechat_b2b_msg_token
+    if not token or not signature or not timestamp or not nonce:
+        return False
+    raw = ''.join(sorted([token, timestamp, nonce]))
+    return hashlib.sha1(raw.encode('utf-8')).hexdigest() == signature
 
 
-@router.post('/payments/wechat/refund-notify')
-async def wechat_refund_notify(request: Request, db: Session = Depends(get_db)):
-    """微信退款结果回调：退款异步完成/异常时回写流水状态。
+@router.api_route('/payments/b2b/notify', methods=['GET', 'POST'])
+async def b2b_pay_notify(request: Request, db: Session = Depends(get_db)):
+    """B2b 支付/退款结果通知：走小程序「消息推送」机制（retail_pay_notify / retail_refund_notify）。
 
-    未配置 WECHAT_PAY_REFUND_NOTIFY_URL 时微信不会回调，退款按「受理成功」直接记账。
+    GET：mp 后台保存消息推送配置时的 URL 有效性校验（echostr 回显）。
+    POST：事件推送，处理后必须回复 success 字符串，否则微信按策略重试。
     """
-    body = await request.body()
-    try:
-        result = verify_and_parse_notify(dict(request.headers), body)
-    except Exception:
-        return {'code': 'FAIL', 'message': '验签失败'}
+    params = request.query_params
+    if request.method == 'GET':
+        if _b2b_msg_signature_ok(params.get('signature'), params.get('timestamp'), params.get('nonce')):
+            return PlainTextResponse(params.get('echostr') or '')
+        return PlainTextResponse('fail', status_code=403)
 
-    out_trade_no = result.get('out_trade_no')
-    refund_status = result.get('refund_status')
-    if not out_trade_no:
-        return {'code': 'FAIL', 'message': '缺少订单号'}
+    try:
+        data = await request.json()
+    except Exception:
+        # 解析失败也回复 success，避免无效报文触发无限重试
+        return PlainTextResponse('success')
+
+    event = data.get('Event')
+    out_trade_no = data.get('out_trade_no')
+    if event not in ('retail_pay_notify', 'retail_refund_notify') or not out_trade_no:
+        return PlainTextResponse('success')
     payment = db.query(OrderPayment).filter(OrderPayment.out_trade_no == out_trade_no).first()
     if not payment:
-        return {'code': 'FAIL', 'message': '流水不存在'}
-    payment.refund_id = payment.refund_id or result.get('refund_id')
-    if refund_status == 'SUCCESS':
-        payment.status = 'refunded'
-        payment.refunded_at = payment.refunded_at or datetime.now()
-    elif refund_status in {'CLOSED', 'ABNORMAL'}:
-        # 退款未到账（如用户收款账户异常），需人工介入重新发起退款
-        payment.status = 'refund_failed'
-    db.commit()
-    return {'code': 'SUCCESS', 'message': '成功'}
+        return PlainTextResponse('success')
+
+    if event == 'retail_pay_notify' and data.get('pay_status') == 'ORDER_PAY_SUCC':
+        await _settle_successful_payment(db, payment, data.get('wxpay_transaction_id'))
+    elif event == 'retail_refund_notify':
+        # REFUND_SUCC / REFUND_FAIL；退款只是受理时先不动状态，以本通知为准
+        if data.get('refund_status') == 'REFUND_SUCC':
+            payment.refund_id = payment.refund_id or data.get('refund_id')
+            payment.status = 'refunded'
+            payment.refunded_at = payment.refunded_at or datetime.now()
+        elif data.get('refund_status') == 'REFUND_FAIL':
+            payment.status = 'refund_failed'
+        db.commit()
+    return PlainTextResponse('success')
 
 
 @router.post('/orders/{order_id}/pay/sync', response_model=OrderOut)
@@ -885,8 +910,8 @@ async def sync_order_payment(
     )
     for payment in pending_payments:
         result = query_order(payment.out_trade_no)
-        if result.get('trade_state') == 'SUCCESS':
-            await _settle_successful_payment(db, payment, result.get('transaction_id'))
+        if result.get('pay_status') == 'ORDER_PAY_SUCC':
+            await _settle_successful_payment(db, payment, result.get('wxpay_transaction_id'))
     db.refresh(order)
     attach_reissue_coupons(db, [order])
     return order
@@ -1035,14 +1060,15 @@ def update_order(
     # 需补款：把变更暂存到补差价流水，支付成功回调后才落库；订单本身此刻不变
     existing = _reusable_pending_payment(db, order, 'supplement')
     if existing is not None:
-        # 作废上一笔未支付的补差价流水，避免多条 pending 叠加（同步关闭微信侧预支付单）
+        # 作废上一笔未支付的补差价流水，避免多条 pending 叠加（同步关闭微信侧订单）
         close_order(existing.out_trade_no)
         existing.status = 'cancelled'
     pending_payload = payload.model_dump_json()
     payment = _new_payment(order, supplement, 'supplement', pending_payload=pending_payload)
     db.add(payment)
     db.flush()
-    pay_params = create_jsapi_payment(payment, auth_customer.wechat_openid or '')
+    session_key = _session_key_for_pay(auth_customer, payload.wx_login_code)
+    pay_params = create_common_payment(payment, session_key)
     db.commit()
     db.refresh(order)
     attach_reissue_coupons(db, [order])
@@ -1050,7 +1076,7 @@ def update_order(
         order_id=order.id,
         out_trade_no=payment.out_trade_no,
         amount=payment.amount,
-        pay_params=PaymentParams(**({'out_trade_no': payment.out_trade_no, **pay_params} if 'out_trade_no' not in pay_params else pay_params)),
+        pay_params=CommonPayParams(out_trade_no=payment.out_trade_no, **pay_params),
     )
     return OrderEditResult(need_payment=True, supplement_amount=supplement, order=OrderOut.model_validate(order), pay=pay)
 
