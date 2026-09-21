@@ -43,18 +43,22 @@ def code_to_session(code: str) -> dict:
     return data
 
 
-def get_access_token() -> str:
-    """获取小程序接口调用凭证，带进程内缓存（提前 5 分钟过期）。"""
+def get_access_token(force_refresh: bool = False) -> str:
+    """获取小程序接口调用凭证，带进程内缓存（提前 5 分钟过期）。
+
+    使用 stable_token 接口：微信侧集中管理 token，多实例/多环境（本地联调 + 服务器）
+    共用同一 appid 时取到的是同一个 token，不会像旧 /cgi-bin/token 那样互相挤掉线。
+    """
     global _access_token_cache, _access_token_expire_at
-    if _access_token_cache and time.time() < _access_token_expire_at:
+    if not force_refresh and _access_token_cache and time.time() < _access_token_expire_at:
         return _access_token_cache
     _ensure_wechat_config()
-    query = urlencode({
+    data = _request_json('https://api.weixin.qq.com/cgi-bin/stable_token', method='POST', payload={
         'grant_type': 'client_credential',
         'appid': settings.wechat_appid,
         'secret': settings.wechat_secret,
+        'force_refresh': force_refresh,
     })
-    data = _request_json(f'https://api.weixin.qq.com/cgi-bin/token?{query}')
     if data.get('errcode'):
         raise HTTPException(status_code=400, detail=f"WeChat access_token failed: {data.get('errmsg')}")
     token = data.get('access_token')

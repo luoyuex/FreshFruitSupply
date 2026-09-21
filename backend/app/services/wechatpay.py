@@ -198,6 +198,8 @@ def _b2b_post(url_path: str, payload: dict) -> dict:
 
     url_path 形如 /retail/B2b/getorder；pay_sig 对「不带 query 的 uri + 请求体」计算，
     access_token 以 query 传入、不参与签名。
+    40001/42001（token 失效/过期）时强刷 access_token 重试一次——pay_sig 不含 token，
+    签名在重试时依然有效。
     """
     import urllib.error
     import urllib.parse
@@ -206,26 +208,31 @@ def _b2b_post(url_path: str, payload: dict) -> dict:
     from app.services.wechat import get_access_token
 
     body = _dumps(payload)
-    query = urllib.parse.urlencode({
-        'access_token': get_access_token(),
-        # 服务端 API 按官方规定一律用现网 AppKey 签名（沙箱单也只能用现网钥匙查/退）
-        'pay_sig': _pay_sig(url_path, body, _server_appkey()),
-    })
-    request = urllib.request.Request(
-        WECHAT_API_HOST + url_path + '?' + query,
-        data=body.encode('utf-8'),
-        headers={'Content-Type': 'application/json'},
-        method='POST',
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            raw = response.read().decode('utf-8')
-    except urllib.error.HTTPError as exc:  # noqa: F821 - urllib.error 随 urllib.request 导入
-        detail = exc.read().decode('utf-8', errors='ignore')
-        raise HTTPException(status_code=502, detail=f'WeChat B2b API error: {detail}') from exc
-    except urllib.error.URLError as exc:
-        raise HTTPException(status_code=502, detail=f'WeChat B2b API unreachable: {exc.reason}') from exc
-    result = json.loads(raw) if raw else {}
+    result: dict = {}
+    for force_refresh in (False, True):
+        query = urllib.parse.urlencode({
+            'access_token': get_access_token(force_refresh=force_refresh),
+            # 服务端 API 按官方规定一律用现网 AppKey 签名（沙箱单也只能用现网钥匙查/退）
+            'pay_sig': _pay_sig(url_path, body, _server_appkey()),
+        })
+        request = urllib.request.Request(
+            WECHAT_API_HOST + url_path + '?' + query,
+            data=body.encode('utf-8'),
+            headers={'Content-Type': 'application/json'},
+            method='POST',
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                raw = response.read().decode('utf-8')
+        except urllib.error.HTTPError as exc:  # noqa: F821 - urllib.error 随 urllib.request 导入
+            detail = exc.read().decode('utf-8', errors='ignore')
+            raise HTTPException(status_code=502, detail=f'WeChat B2b API error: {detail}') from exc
+        except urllib.error.URLError as exc:
+            raise HTTPException(status_code=502, detail=f'WeChat B2b API unreachable: {exc.reason}') from exc
+        result = json.loads(raw) if raw else {}
+        if result.get('errcode') in (40001, 42001) and not force_refresh:
+            continue  # 缓存的 token 已失效：强刷后重试一次
+        break
     errcode = result.get('errcode')
     if errcode not in (None, 0):
         # 9403201 订单不存在等业务性失败，交由调用方按失败处理
