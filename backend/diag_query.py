@@ -4,8 +4,7 @@ from app.models import Order
 from app.services.wechatpay import query_order
 
 TRADE_NOS = [
-    'P178997748521147163b2a',  # payment id=32 / order 32
-    'P1789977465231867278dc',  # payment id=31 / order 31
+    'P178998038533149d80a73',  # payment id=34 / order 34
 ]
 
 db = SessionLocal()
