@@ -96,11 +96,12 @@ def _ensure_pay_config() -> None:
 # --------------------------------------------------------------------------
 # 对外能力
 # --------------------------------------------------------------------------
-def create_common_payment(payment, session_key: str) -> dict:
+def create_common_payment(payment, session_key: str, description: str | None = None) -> dict:
     """生成小程序 wx.requestCommonPayment 所需参数（B2b 微信支付方式）。
 
     payment: OrderPayment 实例（含 out_trade_no / amount）。
     session_key: 用户最新 wx.login code 换取的会话密钥，用于用户态签名。
+    description: 商品描述（用户账单可见），订单管理接入要求填真实商品信息，缺省用流水号。
     返回 {signData, mode, paySig, signature}，前端原样传给 wx.requestCommonPayment。
     Mock 模式下返回带 mock 标记的假参数，前端据此走 mock-success 联调接口。
     """
@@ -121,7 +122,7 @@ def create_common_payment(payment, session_key: str) -> dict:
     sign_data = _dumps({
         'mchid': settings.wechat_pay_mchid,
         'out_trade_no': payment.out_trade_no,
-        'description': f'水果订单 {payment.out_trade_no}',
+        'description': (description or f'水果订单 {payment.out_trade_no}')[:127],
         'amount': {'order_amount': yuan_to_fen(payment.amount), 'currency': 'CNY'},
         'env': settings.wechat_pay_env,
     })

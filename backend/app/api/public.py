@@ -34,6 +34,19 @@ class PayRequestIn(BaseModel):
     wx_login_code: str | None = None
 
 
+def _pay_description(order: Order) -> str:
+    """支付单商品描述（用户账单可见）：订单管理接入要求 description 填真实商品信息。
+
+    description 上限 127 字节（UTF-8），超长按字节截断并补省略号。
+    """
+    summary = '；'.join(f'{item.fruit_name}x{int(item.quantity) if item.quantity == int(item.quantity) else item.quantity}' for item in (order.items or [])[:5])
+    text = f'水果订单:{summary}' if summary else f'水果订单 {order.order_no}'
+    raw = text.encode('utf-8')
+    if len(raw) <= 127:
+        return text
+    return raw[:124].decode('utf-8', 'ignore') + '…'
+
+
 def _session_key_for_pay(customer: Customer, wx_login_code: str | None) -> str:
     """B2b 支付用户态签名用的 session_key：用最新 wx.login code 现场换取。
 
@@ -766,7 +779,7 @@ def pay_order(
         db.flush()
 
     session_key = _session_key_for_pay(customer, payload.wx_login_code if payload else None)
-    pay_params = create_common_payment(payment, session_key)
+    pay_params = create_common_payment(payment, session_key, description=_pay_description(order))
     db.commit()
     return PayResponse(
         order_id=order.id,
@@ -1068,7 +1081,7 @@ def update_order(
     db.add(payment)
     db.flush()
     session_key = _session_key_for_pay(auth_customer, payload.wx_login_code)
-    pay_params = create_common_payment(payment, session_key)
+    pay_params = create_common_payment(payment, session_key, description=_pay_description(order))
     db.commit()
     db.refresh(order)
     attach_reissue_coupons(db, [order])
