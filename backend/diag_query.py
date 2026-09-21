@@ -13,7 +13,7 @@ try:
     for no in TRADE_NOS:
         try:
             state = query_order(no)
-            print(no, '->', state.get('trade_state'), {k: v for k, v in state.items() if k in ('transaction_id', 'success_time', 'amount')})
+            print(no, '->', state.get('pay_status'), 'pay_time:', state.get('pay_time'), 'order_id:', state.get('order_id'), state.get('amount'))
         except Exception as exc:
             print(no, '-> 查询失败:', exc)
     for order in db.query(Order).filter(Order.id.in_([31, 32])).all():

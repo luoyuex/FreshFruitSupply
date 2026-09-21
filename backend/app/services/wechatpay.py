@@ -62,31 +62,37 @@ def _dumps(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
 
 
-def _pay_sig(uri: str, body: str) -> str:
+def _pay_sig(uri: str, body: str, appkey: str) -> str:
     """支付签名：HMAC-SHA256(AppKey, uri + '&' + body)，hex 小写。uri 不带 query。"""
-    key = _appkey().encode('utf-8')
-    return hmac.new(key, f'{uri}&{body}'.encode('utf-8'), hashlib.sha256).hexdigest()
+    return hmac.new(appkey.encode('utf-8'), f'{uri}&{body}'.encode('utf-8'), hashlib.sha256).hexdigest()
 
 
-def _appkey() -> str:
+def _env_appkey() -> str:
+    """小程序端 requestCommonPayment 的 paySig 钥匙：按 env 选（env=1 沙箱 / 0 现网）。"""
     if settings.wechat_pay_env == 1:
         appkey = settings.wechat_pay_sandbox_appkey
         if not appkey:
             raise HTTPException(status_code=500, detail='WECHAT_PAY_SANDBOX_APPKEY is not configured')
         return appkey
+    return _server_appkey()
+
+
+def _server_appkey() -> str:
+    """服务端 API（查单/退款/关单）的 pay_sig 钥匙：官方规定只用现网 AppKey，不区分环境。"""
     appkey = settings.wechat_pay_appkey
     if not appkey:
-        raise HTTPException(status_code=500, detail='WECHAT_PAY_APPKEY is not configured')
+        raise HTTPException(status_code=500, detail='WECHAT_PAY_APPKEY (现网) is not configured')
     return appkey
 
 
 def _ensure_pay_config() -> None:
-    # 按当前支付环境校验对应的 AppKey：env=1 用沙箱，env=0 用现网
+    # 服务端接口永远需要现网 AppKey；小程序端按 env 额外要求沙箱 AppKey
     missing = [name for name, value in {
         'WECHAT_PAY_MCHID': settings.wechat_pay_mchid,
+        'WECHAT_PAY_APPKEY': settings.wechat_pay_appkey,
     }.items() if not value]
     try:
-        _appkey()
+        _env_appkey()
     except HTTPException as exc:
         missing.append(exc.detail)
     if missing:
@@ -129,7 +135,7 @@ def create_common_payment(payment, session_key: str, description: str | None = N
     return {
         'signData': sign_data,
         'mode': 'retail_pay_goods',
-        'paySig': _pay_sig('requestCommonPayment', sign_data),
+        'paySig': _pay_sig('requestCommonPayment', sign_data, _env_appkey()),
         'signature': hmac.new(
             session_key.encode('utf-8'),
             sign_data.encode('utf-8'),
@@ -202,7 +208,8 @@ def _b2b_post(url_path: str, payload: dict) -> dict:
     body = _dumps(payload)
     query = urllib.parse.urlencode({
         'access_token': get_access_token(),
-        'pay_sig': _pay_sig(url_path, body),
+        # 服务端 API 按官方规定一律用现网 AppKey 签名（沙箱单也只能用现网钥匙查/退）
+        'pay_sig': _pay_sig(url_path, body, _server_appkey()),
     })
     request = urllib.request.Request(
         WECHAT_API_HOST + url_path + '?' + query,
