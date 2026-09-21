@@ -81,14 +81,14 @@ def _appkey() -> str:
 
 
 def _ensure_pay_config() -> None:
-    missing = [
-        name
-        for name, value in {
-            'WECHAT_PAY_MCHID': settings.wechat_pay_mchid,
-            'WECHAT_PAY_APPKEY': settings.wechat_pay_appkey,
-        }.items()
-        if not value
-    ]
+    # 按当前支付环境校验对应的 AppKey：env=1 用沙箱，env=0 用现网
+    missing = [name for name, value in {
+        'WECHAT_PAY_MCHID': settings.wechat_pay_mchid,
+    }.items() if not value]
+    try:
+        _appkey()
+    except HTTPException as exc:
+        missing.append(exc.detail)
     if missing:
         raise HTTPException(status_code=500, detail=f'WeChat Pay is not configured: {", ".join(missing)}')
 

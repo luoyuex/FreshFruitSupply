@@ -507,8 +507,10 @@ function showSettlePendingModal() {
 
 async function submitNewOrder() {
   // 1) 先创建待支付订单，2) 立即拉起微信支付，3) 支付成功才算下单完成
+  // B2b 支付需携带最新 wx.login code 供后端生成支付签名
   const order = await request({ url: '/orders', method: 'POST', data: buildOrderData() })
-  const pay = await request({ url: `/orders/${order.id}/pay`, method: 'POST' })
+  const wxLoginCode = await getWxLoginCode()
+  const pay = await request({ url: `/orders/${order.id}/pay`, method: 'POST', data: { wx_login_code: wxLoginCode } })
   try {
     await startPayment(pay)
   } catch (err) {

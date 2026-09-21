@@ -5,7 +5,7 @@ import { request } from './request.js'
 // 返回 Promise，resolve 表示支付动作完成（订单状态以后端查单/通知结算为准），reject 表示取消或失败。
 
 // 取最新 wx.login code：后端用它现场换 session_key 生成支付用户态签名（保证签名时 session_key 必然有效）
-function getWxLoginCode() {
+export function getWxLoginCode() {
   return new Promise((resolve, reject) => {
     uni.login({
       provider: 'weixin',
