@@ -30,6 +30,8 @@ export function createOrderActions({ onChanged } = {}) {
       // 支付取消/失败：订单留在“待支付”，不弹错误打断
       if (err.message && err.message !== '支付已取消') {
         uni.showToast({ title: err.message, icon: 'none' })
+        // 后端可能已在报错前修正了订单状态（如旧流水查单确认已支付），刷新避免列表与后端脱节
+        await reload()
       }
     } finally {
       paying.value = false

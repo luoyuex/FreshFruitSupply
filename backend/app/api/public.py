@@ -697,8 +697,8 @@ def _new_payment(order: Order, amount: Decimal, kind: str, pending_payload: str 
     )
 
 
-def _reusable_pending_payment(db: Session, order: Order, kind: str) -> OrderPayment | None:
-    """取该订单同类型仍待支付的流水，避免重复下单时产生多条 pending 流水。"""
+def _latest_pending_payment(db: Session, order: Order, kind: str) -> OrderPayment | None:
+    """取该订单某类型下最新一笔仍待支付的流水。"""
     return (
         db.query(OrderPayment)
         .filter(
@@ -744,14 +744,38 @@ def create_order(
     return order
 
 
+async def _reconcile_pending_payment(db: Session, payment: OrderPayment) -> bool:
+    """对账并作废一笔待支付流水，返回 True 表示微信侧已支付（本函数已完成结算）。
+
+    B2b 规定 out_trade_no 在商户号下唯一、不可二次下单，重新拉起必须换新单号，
+    所以换单号前先查单，避免把用户实际已付的那笔作废掉导致重复收款。
+    查单失败按未支付处理：旧单号反正不可复用，若钱真到账，结算逻辑会原路退回。
+    """
+    try:
+        result = query_order(payment.out_trade_no)
+    except HTTPException:
+        result = {}
+    if result.get('pay_status') == 'ORDER_PAY_SUCC':
+        await _settle_successful_payment(db, payment, result.get('wxpay_transaction_id'))
+        return True
+    close_order(payment.out_trade_no)
+    payment.status = 'cancelled'
+    return False
+
+
 @router.post('/orders/{order_id}/pay', response_model=PayResponse)
-def pay_order(
+async def pay_order(
     order_id: int,
     payload: PayRequestIn | None = None,
     db: Session = Depends(get_db),
     auth_customer: Customer | None = Depends(get_optional_auth_customer),
 ):
-    """为待支付订单发起（或复用）支付，返回小程序 wx.requestCommonPayment 所需参数。"""
+    """为待支付订单发起支付，返回小程序 wx.requestCommonPayment 所需参数。
+
+    每次请求都新建一笔流水：微信侧同一 out_trade_no 只能下单一次，
+    复用上次未支付的单号会被拒绝（702005 out_trade_no重复），
+    表现为「下单时能支付、待支付列表里再支付就失败」。
+    """
     customer = _current_customer_or_401(auth_customer)
     order = (
         db.query(Order)
@@ -767,16 +791,13 @@ def pay_order(
     if amount is None or amount <= 0:
         raise HTTPException(status_code=400, detail='订单金额异常，无法支付')
 
-    payment = _reusable_pending_payment(db, order, 'initial')
-    if payment is not None and payment.amount != amount:
-        # 应付已变化：作废旧流水并关闭微信侧订单，否则旧金额的订单仍可被支付
-        close_order(payment.out_trade_no)
-        payment.status = 'cancelled'
-        payment = None
-    if payment is None:
-        payment = _new_payment(order, amount, 'initial')
-        db.add(payment)
-        db.flush()
+    stale = _latest_pending_payment(db, order, 'initial')
+    if stale is not None and await _reconcile_pending_payment(db, stale):
+        db.commit()
+        raise HTTPException(status_code=409, detail='订单已支付，请刷新查看')
+    payment = _new_payment(order, amount, 'initial')
+    db.add(payment)
+    db.flush()
 
     session_key = _session_key_for_pay(customer, payload.wx_login_code if payload else None)
     pay_params = create_common_payment(payment, session_key, description=_pay_description(order))
@@ -1071,7 +1092,7 @@ def update_order(
         return OrderEditResult(need_payment=False, supplement_amount=Decimal('0'), order=OrderOut.model_validate(order))
 
     # 需补款：把变更暂存到补差价流水，支付成功回调后才落库；订单本身此刻不变
-    existing = _reusable_pending_payment(db, order, 'supplement')
+    existing = _latest_pending_payment(db, order, 'supplement')
     if existing is not None:
         # 作废上一笔未支付的补差价流水，避免多条 pending 叠加（同步关闭微信侧订单）
         close_order(existing.out_trade_no)

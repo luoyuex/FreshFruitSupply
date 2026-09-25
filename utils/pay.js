@@ -32,8 +32,24 @@ function requestCommonPayment(params) {
       signature: params.signature,
       success: () => resolve(),
       fail: (err) => {
-        const cancelled = /cancel/i.test(err.errMsg || '')
-        reject(new Error(cancelled ? '支付已取消' : (err.errMsg || `支付失败(${err.errCode || ''})`)))
+        // TODO 临时取证：webapi_wxa 这类网关层报错只看 errMsg 不够，定位后删除本段
+        let tradeNo = ''
+        try {
+          tradeNo = JSON.parse(params.signData || '{}').out_trade_no || ''
+        } catch (e) {
+          tradeNo = 'signData非JSON'
+        }
+        uni.showModal({
+          title: `支付失败 单号:${tradeNo}`,
+          content: JSON.stringify(err),
+          showCancel: false,
+        })
+        if (/cancel/i.test(err.errMsg || '')) {
+          reject(new Error('支付已取消'))
+          return
+        }
+        // 透出微信原始 errMsg：像 702005 这类拒绝只有微信侧知道原因，后端看不到
+        reject(new Error(err.errMsg || `支付失败(${err.errCode ?? ''})`))
       },
     })
   })

@@ -114,7 +114,6 @@ def create_common_payment(payment, session_key: str, description: str | None = N
     if is_mock():
         return {
             'mock': True,
-            'out_trade_no': payment.out_trade_no,
             'timeStamp': str(int(time.time())),
             'nonceStr': uuid.uuid4().hex,
             'package': f'prepay_id=mock_{payment.out_trade_no}',
