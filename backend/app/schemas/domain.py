@@ -202,6 +202,18 @@ class ReissueCouponOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class OrderNotificationOut(BaseModel):
+    """一封场景邮件的投递结果，后台据此判断哪一类通知没送到并重发。"""
+    kind: str
+    status: str
+    attempts: int
+    refund_amount: Decimal | None = None
+    error: str | None = None
+    sent_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class OrderOut(BaseModel):
     id: int
     order_no: str
@@ -226,6 +238,7 @@ class OrderOut(BaseModel):
     created_at: datetime
     items: List[OrderItemOut]
     reissue_coupons: List[ReissueCouponOut] = Field(default_factory=list)
+    notifications: List[OrderNotificationOut] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -277,6 +290,27 @@ class OrderStatusUpdate(BaseModel):
 
 class OrderBulkStatusUpdate(OrderStatusUpdate):
     order_ids: List[int] = Field(min_length=1)
+
+
+class OrderPaymentOut(BaseModel):
+    """订单支付流水：后台据此判断哪几笔可退（仅 success 可退）并展示退款结果。"""
+    id: int
+    out_trade_no: str
+    kind: str
+    amount: Decimal
+    status: str
+    transaction_id: str | None = None
+    refund_id: str | None = None
+    paid_at: datetime | None = None
+    refunded_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OrderRefundIn(BaseModel):
+    """后台退款请求：payment_id 留空表示退该订单全部已支付流水；reason 写进微信退款描述。"""
+    payment_id: int | None = None
+    reason: str | None = Field(default=None, max_length=80)
 
 
 class CouponTemplateOut(BaseModel):

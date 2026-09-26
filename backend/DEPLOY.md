@@ -267,7 +267,7 @@ server {
 | `WECHAT_PAY_PUBLIC_KEY_ID` | `PUB_KEY_ID_0114xxx` | 公钥 ID，商户平台可查 |
 | `WECHAT_PAY_NOTIFY_URL` | `https://zhenguolian.cn/api/payments/wechat/notify` | 支付回调 |
 | `WECHAT_PAY_REFUND_NOTIFY_URL` | `https://zhenguolian.cn/api/payments/wechat/refund-notify` | 退款回调 |
-| `SMTP_*` / `ORDER_NOTIFY_EMAIL` | 生产邮箱 | 支付成功后给供应商发配货邮件 |
+| `SMTP_*` / `ORDER_NOTIFY_EMAIL` | 生产邮箱 | 五类场景邮件（新单配货 / 改单 / 客户取消退款 / 后台退款 / 关单后到账退回）统一发给这一个地址；`SMTP_USERNAME` 与 `SMTP_PASSWORD`（QQ 邮箱为授权码）任一为空时全部邮件会记为 failed |
 
 ### 管理员默认密码必须修改
 

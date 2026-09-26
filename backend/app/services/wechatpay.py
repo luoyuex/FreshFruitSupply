@@ -166,10 +166,11 @@ def close_order(out_trade_no: str) -> bool:
         return False
 
 
-def refund(payment) -> dict:
+def refund(payment, description: str = '订单取消退款') -> dict:
     """按支付流水原路退款（160 天内；同单退款间隔须大于 1 分钟）。
 
     仅发起退款请求，成功与否以退款通知（retail_refund_notify）或查退款为准。
+    description 会显示在用户微信账单里，后台主动退款时带上原因。
     Mock 模式直接返回假 refund_id，视为退款成功。
     """
     if is_mock():
@@ -181,7 +182,7 @@ def refund(payment) -> dict:
         'out_refund_no': generate_out_trade_no('R'),
         'refund_amount': yuan_to_fen(payment.amount),
         'refund_from': 1,  # 人工客服退款
-        'description': '订单取消退款',
+        'description': description[:127],
     })
     refund_id = result.get('refund_id')
     if not refund_id:

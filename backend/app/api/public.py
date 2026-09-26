@@ -18,7 +18,13 @@ from app.schemas import AnnouncementFeedOut, AnnouncementOut, AnnouncementReadOu
 from app.services.coupon import attach_reissue_coupons, compute_discount, effective_coupon_status, grant_coupons_on_verified, release_order_coupons
 from app.services.customer import get_or_create_customer
 from app.services.settings import compute_delivery_fee, get_delivery_config
-from app.services.email import send_order_email, send_order_refund_email
+from app.services.email import (
+    KIND_DISPATCH,
+    KIND_REFUND_CUSTOMER,
+    KIND_STRAY_PAYMENT,
+    KIND_UPDATED,
+)
+from app.services.order_notify import notify_merchant
 from app.services.upload import save_upload, to_public_urls
 from app.services.wechat import code_to_session
 from app.services.wechatpay import close_order, create_common_payment, generate_out_trade_no, is_mock, query_order, refund
@@ -656,35 +662,6 @@ async def submit_verification(
     return _verification_payload(verification)
 
 
-async def _notify_order_paid(db: Session, order: Order) -> None:
-    """订单付满后通知供应商配货。挂载补送券后发邮件，回写通知状态。
-
-    邮件由「下单即发」移到「支付成功后发」——只有付过款的订单才需要供应商配货。
-    """
-    # 先挂载补送券，订单邮件才能带上补送商品明细供配货
-    attach_reissue_coupons(db, [order])
-    try:
-        await send_order_email(order)
-        order.email_notify_status = 'sent'
-    except Exception:
-        order.email_notify_status = 'failed'
-    db.commit()
-    db.refresh(order)
-    attach_reissue_coupons(db, [order])
-
-
-async def _notify_order_refunded(order: Order, refunded_amount: Decimal) -> None:
-    """取消退款后邮件通知供应商，让商户对「已付款又被退掉」的订单有感知。
-
-    退款已原路退回，通知只是提醒，发信失败不能影响取消结果，故忽略异常。
-    调用方需先 attach_reissue_coupons，邮件才会带上补送商品明细。
-    """
-    try:
-        await send_order_refund_email(order, refunded_amount)
-    except Exception:
-        pass
-
-
 def _new_payment(order: Order, amount: Decimal, kind: str, pending_payload: str | None = None) -> OrderPayment:
     """新建一笔待支付流水（首付/补差价），商户订单号全局唯一。"""
     return OrderPayment(
@@ -837,6 +814,7 @@ async def _settle_successful_payment(db: Session, payment: OrderPayment, transac
         payment.refund_id = result.get('refund_id')
         payment.refunded_at = datetime.now()
         db.commit()
+        await notify_merchant(db, order, KIND_STRAY_PAYMENT, payment.amount)
         return
 
     payment.status = 'success'
@@ -844,15 +822,17 @@ async def _settle_successful_payment(db: Session, payment: OrderPayment, transac
     payment.paid_at = datetime.now()
     order.paid_amount = (order.paid_amount or Decimal('0')) + payment.amount
 
-    # 首付付满：订单成立，转待确认并通知供应商
-    if payment.kind == 'initial' and order.status == 'unpaid' and order.paid_amount >= order.payable_total:
-        order.status = 'pending'
+    # 首付到账：订单成立并通知商户配货。金额未付满也发——钱收了必须让商户知道，
+    # 只是不推进状态（未付满的差额走补差价），否则会静默卡在 unpaid 直到超时关单。
+    if payment.kind == 'initial' and order.status == 'unpaid':
+        if order.paid_amount >= order.payable_total:
+            order.status = 'pending'
         db.commit()
         db.refresh(order)
-        await _notify_order_paid(db, order)
+        await notify_merchant(db, order, KIND_DISPATCH)
         return
 
-    # 补差价付满：把编辑时暂存的明细变更落库，刷新应付后重发配货邮件
+    # 补差价付满：把编辑时暂存的明细变更落库，刷新应付后按新明细通知商户
     if payment.kind == 'supplement' and payment.pending_payload:
         customer = db.query(Customer).filter(Customer.id == order.customer_id).first()
         stored = OrderCreate(**json.loads(payment.pending_payload))
@@ -861,7 +841,7 @@ async def _settle_successful_payment(db: Session, payment: OrderPayment, transac
         payment.pending_payload = None
         db.commit()
         db.refresh(order)
-        await _notify_order_paid(db, order)
+        await notify_merchant(db, order, KIND_UPDATED)
         return
 
     db.commit()
@@ -999,9 +979,11 @@ async def cancel_my_order(
     refunded_amount = cancel_order(db, order)
     db.commit()
     db.refresh(order)
-    attach_reissue_coupons(db, [order])
     if refunded_amount > 0:
-        await _notify_order_refunded(order, refunded_amount)
+        await notify_merchant(db, order, KIND_REFUND_CUSTOMER, refunded_amount)
+    else:
+        # 未付款的取消不退钱、不发信，但补送券明细仍要随响应返回
+        attach_reissue_coupons(db, [order])
     return order
 
 
@@ -1055,7 +1037,7 @@ def get_order(
 
 
 @router.patch('/orders/{order_id}', response_model=OrderEditResult)
-def update_order(
+async def update_order(
     order_id: int,
     payload: OrderCreate,
     db: Session = Depends(get_db),
@@ -1066,6 +1048,8 @@ def update_order(
     加量导致应付上升时，不立即改订单，而是把变更暂存进一笔 supplement 待支付流水，
     返回补差价的拉起支付参数；支付成功回调后暂存的变更才落库（暂存式，财务最严谨）。
     应付未上升（如仅改配送备注/收货信息）时，变更直接落库、无需补款。
+    两种情况都在改单生效时给商户发一封最新明细邮件；补款未到账前不发，
+    否则商户会按还没生效的明细备货。
     """
     if not auth_customer:
         raise HTTPException(status_code=401, detail='Missing customer login')
@@ -1083,12 +1067,12 @@ def update_order(
     new_payable = _preview_payable(order, auth_customer, payload, db)
     supplement = new_payable - (order.paid_amount or Decimal('0'))
 
-    # 不需补款：变更直接落库（收货信息/备注变化，或加了免费补送券但应付未上升）
+    # 不需补款：变更直接落库并发改单邮件（收货信息/备注变化，或加了免费补送券但应付未上升）
     if supplement <= 0:
         _apply_order_payload(order, auth_customer, payload, db)
         db.commit()
         db.refresh(order)
-        attach_reissue_coupons(db, [order])
+        await notify_merchant(db, order, KIND_UPDATED)
         return OrderEditResult(need_payment=False, supplement_amount=Decimal('0'), order=OrderOut.model_validate(order))
 
     # 需补款：把变更暂存到补差价流水，支付成功回调后才落库；订单本身此刻不变

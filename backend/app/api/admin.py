@@ -11,11 +11,14 @@ from sqlalchemy.orm import Session, joinedload
 from app.api.deps import admin_permissions, get_current_admin, get_optional_auth_customer, require_admin_permission
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db.session import get_db
-from app.models import Admin, Announcement, CouponTemplate, Customer, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, PriceQuote
-from app.schemas import AdminAuthOut, AdminEntryVisibleOut, AdminLogin, AdminOut, AdminPasswordUpdate, AdminUpsert, AnnouncementOut, AnnouncementUpsert, CouponGrantIn, CouponTemplateOut, CouponTemplateUpsert, CustomerAdminOut, CustomerCouponOut, DeliveryConfigOut, DeliveryConfigUpdate, FruitCategoryOut, FruitCategoryUpsert, FruitOut, FruitUpsert, OrderBulkStatusUpdate, OrderOut, OrderStatusUpdate, SalesStatsOut, VerificationReview
+from app.models import Admin, Announcement, CouponTemplate, Customer, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, OrderNotification, OrderPayment, PriceQuote
+from app.schemas import AdminAuthOut, AdminEntryVisibleOut, AdminLogin, AdminOut, AdminPasswordUpdate, AdminUpsert, AnnouncementOut, AnnouncementUpsert, CouponGrantIn, CouponTemplateOut, CouponTemplateUpsert, CustomerAdminOut, CustomerCouponOut, DeliveryConfigOut, DeliveryConfigUpdate, FruitCategoryOut, FruitCategoryUpsert, FruitOut, FruitUpsert, OrderBulkStatusUpdate, OrderNotificationOut, OrderOut, OrderPaymentOut, OrderRefundIn, OrderStatusUpdate, SalesStatsOut, VerificationReview
 from app.services.coupon import attach_reissue_coupons, effective_coupon_status, grant_coupon_to_customer
+from app.services.email import KIND_REFUND_ADMIN, NOTIFY_KINDS
 from app.services.order_maintenance import cancel_order
+from app.services.order_notify import notify_merchant
 from app.services.settings import DELIVERY_FEE_KEY, DELIVERY_FREE_THRESHOLD_KEY, get_delivery_config, set_setting
+from app.services.wechatpay import refund as refund_at_wechat
 from app.services.upload import save_upload, to_public_url, to_public_urls, to_storage_path, to_storage_paths
 
 router = APIRouter(prefix='/admin')
@@ -249,11 +252,12 @@ def delivery_sheet(
 
 
 @router.patch('/orders/bulk-status', response_model=list[OrderOut])
-def bulk_update_order_status(
+async def bulk_update_order_status(
     payload: OrderBulkStatusUpdate,
     db: Session = Depends(get_db),
     _: Admin = Depends(require_admin_permission('orders')),
 ):
+    """批量改状态。改为「已取消」时逐单退款并邮件通知商户，与单个取消口径一致。"""
     orders = (
         db.query(Order)
         .options(joinedload(Order.items))
@@ -264,21 +268,25 @@ def bulk_update_order_status(
     missing_ids = [order_id for order_id in payload.order_ids if order_id not in found_ids]
     if missing_ids:
         raise HTTPException(status_code=404, detail=f'Orders not found: {missing_ids}')
+    refunded: list[tuple[Order, Decimal]] = []
     for order in orders:
         if payload.status == 'cancelled' and order.status not in ('cancelled', 'closed'):
             # 取消时由 cancel_order 决定终态：已付款→退款并置 cancelled，未付款→置 closed
-            cancel_order(db, order)
+            refunded.append((order, cancel_order(db, order)))
         else:
             order.status = payload.status
     db.commit()
     for order in orders:
         db.refresh(order)
     attach_reissue_coupons(db, orders)
+    for order, amount in refunded:
+        if amount > 0:
+            await notify_merchant(db, order, KIND_REFUND_ADMIN, amount)
     return sorted(orders, key=lambda item: payload.order_ids.index(item.id))
 
 
 @router.patch('/orders/{order_id}', response_model=OrderOut)
-def update_order_status(
+async def update_order_status(
     order_id: int,
     payload: OrderStatusUpdate,
     db: Session = Depends(get_db),
@@ -287,15 +295,117 @@ def update_order_status(
     order = db.query(Order).options(joinedload(Order.items)).filter(Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail='Order not found')
+    refunded_amount = Decimal('0')
     if payload.status == 'cancelled' and order.status != 'cancelled':
         # 取消已付款订单会原路退款；未付款订单直接关闭。cancel_order 内部据 paid_amount 决定终态。
-        cancel_order(db, order)
+        refunded_amount = cancel_order(db, order)
     else:
         order.status = payload.status
     db.commit()
     db.refresh(order)
+    if refunded_amount > 0:
+        # 已付款订单在后台被取消，配货的人必须收到停手通知，否则照常发货
+        await notify_merchant(db, order, KIND_REFUND_ADMIN, refunded_amount)
     attach_reissue_coupons(db, [order])
     return order
+
+
+# 微信规定同一笔订单两次退款请求须间隔 1 分钟以上
+REFUND_MIN_INTERVAL = timedelta(minutes=1)
+
+
+@router.get('/orders/{order_id}/payments', response_model=list[OrderPaymentOut])
+def list_order_payments(
+    order_id: int,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(require_admin_permission('orders')),
+):
+    """订单的支付流水：后台据此判断哪几笔可退（只有 success 状态可退）。"""
+    if not db.query(Order).filter(Order.id == order_id).first():
+        raise HTTPException(status_code=404, detail='Order not found')
+    return (
+        db.query(OrderPayment)
+        .filter(OrderPayment.order_id == order_id)
+        .order_by(OrderPayment.id.asc())
+        .all()
+    )
+
+
+@router.post('/orders/{order_id}/refund', response_model=list[OrderPaymentOut])
+async def refund_order_payments(
+    order_id: int,
+    payload: OrderRefundIn,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(require_admin_permission('orders')),
+):
+    """后台原路退款：默认退该订单全部已支付流水，可用 payment_id 指定只退一笔。
+
+    与「取消订单」分工不同：取消会连带改订单状态并释放优惠券，本接口只退钱、
+    不动订单状态，便于商户退款后自行决定是否关单。
+    退款为受理制，实际到账以微信退款通知（retail_refund_notify）为准。
+    """
+    order = db.query(Order).options(joinedload(Order.items)).filter(Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail='Order not found')
+
+    query = db.query(OrderPayment).filter(
+        OrderPayment.order_id == order_id,
+        OrderPayment.status == 'success',
+    )
+    if payload.payment_id:
+        query = query.filter(OrderPayment.id == payload.payment_id)
+    payments = query.order_by(OrderPayment.id.asc()).all()
+    if not payments:
+        raise HTTPException(status_code=400, detail='没有可退款的已支付流水')
+
+    now = datetime.now()
+    for payment in payments:
+        if payment.refunded_at and now - payment.refunded_at < REFUND_MIN_INTERVAL:
+            raise HTTPException(status_code=400, detail='同一笔退款间隔须大于1分钟，请稍后再试')
+        result = refund_at_wechat(payment, description=(payload.reason or '后台退款').strip() or '后台退款')
+        payment.status = 'refunded'
+        payment.refund_id = result.get('refund_id')
+        payment.refunded_at = now
+        order.paid_amount = max(Decimal('0'), (order.paid_amount or Decimal('0')) - payment.amount)
+    db.commit()
+    for payment in payments:
+        db.refresh(payment)
+
+    await notify_merchant(db, order, KIND_REFUND_ADMIN, sum((p.amount for p in payments), Decimal('0')))
+    return payments
+
+
+@router.post('/orders/{order_id}/notify/{kind}', response_model=list[OrderNotificationOut])
+async def resend_order_notice(
+    order_id: int,
+    kind: str,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(require_admin_permission('orders')),
+):
+    """重发某一封场景邮件：投递失败、或商户说没收到时手动补。
+
+    只重发已有投递记录的类别（业务触发时才建记录），正文按订单当前明细重建，
+    退款金额沿用记录里那次触发的数额。
+    """
+    if kind not in NOTIFY_KINDS:
+        raise HTTPException(status_code=400, detail='未知的通知类型')
+    record = (
+        db.query(OrderNotification)
+        .filter(OrderNotification.order_id == order_id, OrderNotification.kind == kind)
+        .first()
+    )
+    if not record:
+        raise HTTPException(status_code=400, detail='该订单还没有这类通知')
+    order = (
+        db.query(Order)
+        .options(joinedload(Order.items))
+        .filter(Order.id == order_id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail='Order not found')
+    await notify_merchant(db, order, kind, record.refund_amount)
+    return sorted(order.notifications, key=lambda item: item.kind)
 
 
 @router.get('/verifications')

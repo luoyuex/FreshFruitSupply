@@ -2,7 +2,7 @@ import json
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -170,6 +170,7 @@ class Order(TimestampMixin, Base):
     district: Mapped[str] = mapped_column(String(60))
     detail_address: Mapped[str] = mapped_column(String(255))
     delivery_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 最近一封场景邮件的投递结果（明细见 order_notifications），小程序后台仍在读此列
     email_notify_status: Mapped[str] = mapped_column(String(32), default='pending')
     coupon_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     discount_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
@@ -181,6 +182,7 @@ class Order(TimestampMixin, Base):
     customer: Mapped[Customer] = relationship(back_populates='orders')
     items: Mapped[list['OrderItem']] = relationship(back_populates='order', cascade='all, delete-orphan')
     payments: Mapped[list['OrderPayment']] = relationship(back_populates='order', cascade='all, delete-orphan')
+    notifications: Mapped[list['OrderNotification']] = relationship(back_populates='order', cascade='all, delete-orphan')
 
     @property
     def can_edit(self) -> bool:
@@ -237,6 +239,31 @@ class OrderPayment(TimestampMixin, Base):
     refunded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     order: Mapped[Order] = relationship(back_populates='payments')
+
+
+class OrderNotification(TimestampMixin, Base):
+    """订单场景邮件的投递记录：一个订单每种通知一行，保存最近一次的发送结果供后台核对与重发。
+
+    kind: dispatch=新单配货 / updated=改单后的最新明细 / refund_customer=客户自助取消退款 /
+          refund_admin=商户后台退款 / stray_payment=订单关闭后才到账、已原路退回
+    status: sent=已发出 / failed=发送失败（后台可重发）
+    """
+
+    __tablename__ = 'order_notifications'
+    __table_args__ = (UniqueConstraint('order_id', 'kind', name='uq_order_notifications_order_kind'),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey('orders.id'), index=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(16), default='pending', index=True)
+    # 累计发送次数：重发会一直累加，用来判断商户是否反复收到同一类通知
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    # 退款类邮件写进正文的退款金额：重发时据此还原当时的文案，不从已清零的 paid_amount 反推
+    refund_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    order: Mapped[Order] = relationship(back_populates='notifications')
 
 
 class Admin(TimestampMixin, Base):

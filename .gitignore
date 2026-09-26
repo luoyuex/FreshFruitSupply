@@ -18,3 +18,6 @@ backend/uploads/*
 unpackage/
 dist/
 node_modules/
+
+# Web 后台本地代理配置（各人环境不同，不提交）
+web-admin/.env.local
