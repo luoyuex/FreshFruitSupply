@@ -53,6 +53,8 @@ export const listAdminUsers = () => http.get('/admin/admin-users')
 export const createAdminUser = (data) => http.post('/admin/admin-users', data)
 export const updateAdminUser = (id, data) => http.patch(`/admin/admin-users/${id}`, data)
 export const resetAdminPassword = (id, password) => http.patch(`/admin/admin-users/${id}/password`, { password })
+export const deleteAdminUser = (id) => http.delete(`/admin/admin-users/${id}`)
+export const changeMyPassword = (data) => http.post('/admin/me/password', data)
 export const listCustomers = () => http.get('/admin/customers')
 
 // ---- 设置与公告 ----

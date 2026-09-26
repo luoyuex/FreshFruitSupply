@@ -98,7 +98,7 @@ export function isoDate(value = new Date()) {
   return `${date.getFullYear()}-${month}-${day}`
 }
 
-// key 即后端权限点（app/api/deps.py 的 ADMIN_PERMISSIONS）
+// key 即后端权限点（app/api/deps.py 的 ALL_PERMISSIONS）
 export const ADMIN_NAV = [
   { key: 'orders', label: '订单管理', path: '/orders', icon: 'List' },
   { key: 'stats', label: '销售统计', path: '/stats', icon: 'DataAnalysis' },
@@ -109,6 +109,27 @@ export const ADMIN_NAV = [
   { key: 'settings', label: '系统设置', path: '/settings', icon: 'Setting' },
   { key: 'settings', label: '公告管理', path: '/announcements', icon: 'Bell' },
 ]
+
+// 授权面板里的可勾选项：公告管理复用 settings 权限点，故合并成一项说明
+export const PERMISSION_OPTIONS = [
+  { key: 'orders', label: '订单管理' },
+  { key: 'stats', label: '销售统计' },
+  { key: 'verifications', label: '认证管理' },
+  { key: 'fruits', label: '水果报价' },
+  { key: 'coupons', label: '卡券管理' },
+  { key: 'users', label: '用户管理' },
+  { key: 'settings', label: '系统设置（含公告）' },
+]
+
+// 与后端 deps.py 的 ROLE_PRESETS 一致：选角色即按此覆盖勾选，之后仍可逐项改
+export const ROLE_PRESETS = {
+  super_admin: PERMISSION_OPTIONS.map((item) => item.key),
+  order_admin: ['orders'],
+}
+
+export function permissionLabels(keys) {
+  return (keys || []).map((key) => PERMISSION_OPTIONS.find((item) => item.key === key)?.label || key)
+}
 
 export const ORDER_STATUSES = ['unpaid', 'pending', 'confirmed', 'delivering', 'completed', 'closed', 'cancelled']
 

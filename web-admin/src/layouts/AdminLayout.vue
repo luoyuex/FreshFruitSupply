@@ -1,8 +1,9 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from 'vuex'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { changeMyPassword } from '../api'
 import { roleLabel } from '../utils/format'
 
 const route = useRoute()
@@ -12,7 +13,44 @@ const store = useStore()
 const navItems = computed(() => store.getters.navItems)
 const admin = computed(() => store.state.admin)
 
+const passwordDialog = ref(false)
+const changing = ref(false)
+const passwordForm = reactive({ old_password: '', new_password: '', confirm: '' })
+
+function openPasswordDialog() {
+  passwordForm.old_password = ''
+  passwordForm.new_password = ''
+  passwordForm.confirm = ''
+  passwordDialog.value = true
+}
+
+async function submitPassword() {
+  if (passwordForm.new_password.length < 6) {
+    ElMessage.warning('新密码至少 6 位')
+    return
+  }
+  if (passwordForm.new_password !== passwordForm.confirm) {
+    ElMessage.warning('两次输入的新密码不一致')
+    return
+  }
+  changing.value = true
+  try {
+    await changeMyPassword({ old_password: passwordForm.old_password, new_password: passwordForm.new_password })
+    passwordDialog.value = false
+    // 令牌未失效，无需重新登录；旧密码此刻已作废
+    ElMessage.success('密码已修改')
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    changing.value = false
+  }
+}
+
 async function onCommand(command) {
+  if (command === 'password') {
+    openPasswordDialog()
+    return
+  }
   if (command !== 'logout') return
   await ElMessageBox.confirm('确认退出登录？', '提示', { type: 'warning' })
   store.dispatch('logout')
@@ -41,6 +79,7 @@ async function onCommand(command) {
           </span>
           <template #dropdown>
             <el-dropdown-menu>
+              <el-dropdown-item command="password">修改密码</el-dropdown-item>
               <el-dropdown-item command="logout">退出登录</el-dropdown-item>
             </el-dropdown-menu>
           </template>
@@ -50,6 +89,23 @@ async function onCommand(command) {
         <router-view />
       </el-main>
     </el-container>
+    <el-dialog v-model="passwordDialog" title="修改密码" width="420px">
+      <el-form label-width="96px">
+        <el-form-item label="原密码">
+          <el-input v-model="passwordForm.old_password" type="password" show-password autocomplete="current-password" />
+        </el-form-item>
+        <el-form-item label="新密码">
+          <el-input v-model="passwordForm.new_password" type="password" show-password placeholder="至少 6 位" autocomplete="new-password" />
+        </el-form-item>
+        <el-form-item label="确认新密码">
+          <el-input v-model="passwordForm.confirm" type="password" show-password autocomplete="new-password" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="passwordDialog = false">取消</el-button>
+        <el-button type="primary" :loading="changing" @click="submitPassword">保存</el-button>
+      </template>
+    </el-dialog>
   </el-container>
 </template>
 

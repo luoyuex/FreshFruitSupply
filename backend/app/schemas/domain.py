@@ -210,6 +210,8 @@ class OrderNotificationOut(BaseModel):
     refund_amount: Decimal | None = None
     error: str | None = None
     sent_at: datetime | None = None
+    # 最近一次尝试（含失败）的时间：失败时 sent_at 为空，列表按此排「最近一封」
+    updated_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -436,9 +438,12 @@ class AdminOut(BaseModel):
     id: int
     username: str
     role: str
+    # 实际生效的权限点，由后端按「显式勾选优先、否则回落角色」算出，前端据此渲染勾选框
+    permissions: List[str] = Field(default_factory=list)
     wechat_openid: str | None = None
     nickname: str | None = None
     is_active: bool
+    last_login_at: datetime | None = None
     created_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
@@ -447,6 +452,8 @@ class AdminOut(BaseModel):
 class AdminUpsert(BaseModel):
     username: str
     role: Literal['super_admin', 'order_admin'] = 'order_admin'
+    # 留空表示不改动已勾选的权限；传列表则整体覆盖
+    permissions: List[str] | None = None
     wechat_openid: str | None = None
     nickname: str | None = None
     is_active: bool = True
@@ -455,6 +462,12 @@ class AdminUpsert(BaseModel):
 
 class AdminPasswordUpdate(BaseModel):
     password: str = Field(min_length=6)
+
+
+class AdminSelfPasswordUpdate(BaseModel):
+    """管理员自行改密：必须带旧密码，避免拿到一个未锁屏的浏览器就能换掉别人的口令。"""
+    old_password: str
+    new_password: str = Field(min_length=6)
 
 
 class TokenOut(BaseModel):

@@ -1,3 +1,5 @@
+import json
+
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -5,14 +7,27 @@ from app.core.security import decode_access_token, decode_access_token_with_grac
 from app.db.session import get_db
 from app.models import Admin, Customer
 
-ADMIN_PERMISSIONS = {
-    'super_admin': ['orders', 'verifications', 'fruits', 'stats', 'users', 'coupons', 'settings'],
+# 后台全部权限点，与前端 ADMIN_NAV 的 key 一一对应
+ALL_PERMISSIONS = ['orders', 'verifications', 'fruits', 'stats', 'coupons', 'users', 'settings']
+
+# 角色的默认权限集：账号未显式勾选权限（admins.permissions 为空）时按此回落
+ROLE_PRESETS = {
+    'super_admin': ALL_PERMISSIONS,
     'order_admin': ['orders'],
 }
 
 
 def admin_permissions(admin: Admin) -> list[str]:
-    return ADMIN_PERMISSIONS.get(admin.role or 'order_admin', ['orders'])
+    """账号实际权限点：显式勾选的 permissions 优先，为空则回落到角色预设。"""
+    if admin.permissions:
+        try:
+            granted = json.loads(admin.permissions)
+        except json.JSONDecodeError:
+            granted = []
+        allowed = [item for item in ALL_PERMISSIONS if item in granted]
+        if allowed:
+            return allowed
+    return list(ROLE_PRESETS.get(admin.role or 'order_admin', ['orders']))
 
 
 def get_current_admin(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> Admin:

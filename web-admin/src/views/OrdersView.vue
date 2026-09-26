@@ -19,6 +19,7 @@ import {
   money,
   noticeLabel,
   qtyText,
+  shortDateTime,
   statusLabel,
   statusTone,
 } from '../utils/format'
@@ -179,9 +180,27 @@ async function doRefund(paymentId) {
   }
 }
 
-function failedNotices(order) {
-  return (order.notifications || []).filter((notice) => notice.status === 'failed')
+// 状态列要常驻：有失败就把每一封失败的都列出来（各自带重发），全成功只显示最近一封
+function noticesToShow(order) {
+  const notices = order.notifications || []
+  const byTimeDesc = (list) => list.slice().sort((a, b) => String(b.updated_at || b.sent_at || '').localeCompare(String(a.updated_at || a.sent_at || '')))
+  const failed = byTimeDesc(notices.filter((notice) => notice.status !== 'sent'))
+  if (failed.length) return failed
+  const sorted = byTimeDesc(notices)
+  return sorted.length ? [sorted[0]] : []
 }
+
+function noticeSummary(notice) {
+  if (notice.status === 'sent') return `${noticeLabel(notice.kind)}已发送 ${shortDateTime(notice.sent_at)}`
+  return `${noticeLabel(notice.kind)}发送失败`
+}
+
+// 列表按订单预取要展示的通知，避免模板里对同一行反复排序
+const visibleNotices = computed(() => {
+  const map = {}
+  for (const order of orders.value) map[order.id] = noticesToShow(order)
+  return map
+})
 
 // 邮件按订单当前明细重建，改地址/加商品后再重发不会送出旧内容
 async function doResend(order, kind) {
@@ -301,12 +320,24 @@ onMounted(loadOrders)
             <div v-if="Number(row.delivery_fee) > 0" class="muted">配送费 ¥{{ money(row.delivery_fee) }}</div>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="170">
+        <el-table-column label="状态" width="210">
           <template #default="{ row }">
             <el-tag :type="statusTone(row.status)">{{ statusLabel(row.status) }}</el-tag>
-            <div v-for="notice in failedNotices(row)" :key="notice.kind" class="danger-text notice-line">
-              {{ noticeLabel(notice.kind) }}失败
+            <div
+              v-for="notice in visibleNotices[row.id]"
+              :key="notice.kind"
+              class="notice-line"
+              :class="{ 'danger-text': notice.status !== 'sent' }"
+            >
+              <el-tooltip
+                :disabled="notice.status === 'sent'"
+                :content="notice.error || '发送失败，原因未记录'"
+                placement="top"
+              >
+                <span>{{ noticeSummary(notice) }}</span>
+              </el-tooltip>
               <el-button
+                v-if="notice.status !== 'sent'"
                 link
                 type="primary"
                 size="small"
@@ -316,6 +347,7 @@ onMounted(loadOrders)
                 重发
               </el-button>
             </div>
+            <div v-if="!visibleNotices[row.id].length" class="muted notice-line">未触发邮件</div>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="230" fixed="right">

@@ -8,11 +8,11 @@ from sqlalchemy import func as sa_func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
-from app.api.deps import admin_permissions, get_current_admin, get_optional_auth_customer, require_admin_permission
+from app.api.deps import ALL_PERMISSIONS, admin_permissions, get_current_admin, get_optional_auth_customer, require_admin_permission
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db.session import get_db
 from app.models import Admin, Announcement, CouponTemplate, Customer, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, OrderNotification, OrderPayment, PriceQuote
-from app.schemas import AdminAuthOut, AdminEntryVisibleOut, AdminLogin, AdminOut, AdminPasswordUpdate, AdminUpsert, AnnouncementOut, AnnouncementUpsert, CouponGrantIn, CouponTemplateOut, CouponTemplateUpsert, CustomerAdminOut, CustomerCouponOut, DeliveryConfigOut, DeliveryConfigUpdate, FruitCategoryOut, FruitCategoryUpsert, FruitOut, FruitUpsert, OrderBulkStatusUpdate, OrderNotificationOut, OrderOut, OrderPaymentOut, OrderRefundIn, OrderStatusUpdate, SalesStatsOut, VerificationReview
+from app.schemas import AdminAuthOut, AdminEntryVisibleOut, AdminLogin, AdminOut, AdminPasswordUpdate, AdminSelfPasswordUpdate, AdminUpsert, AnnouncementOut, AnnouncementUpsert, CouponGrantIn, CouponTemplateOut, CouponTemplateUpsert, CustomerAdminOut, CustomerCouponOut, DeliveryConfigOut, DeliveryConfigUpdate, FruitCategoryOut, FruitCategoryUpsert, FruitOut, FruitUpsert, OrderBulkStatusUpdate, OrderNotificationOut, OrderOut, OrderPaymentOut, OrderRefundIn, OrderStatusUpdate, SalesStatsOut, VerificationReview
 from app.services.coupon import attach_reissue_coupons, effective_coupon_status, grant_coupon_to_customer
 from app.services.email import KIND_REFUND_ADMIN, NOTIFY_KINDS
 from app.services.order_maintenance import cancel_order
@@ -25,16 +25,34 @@ router = APIRouter(prefix='/admin')
 
 
 def _admin_payload(admin: Admin) -> AdminOut:
-    return AdminOut.model_validate(admin)
+    """AdminOut.permissions 是算出来的（显式勾选优先、否则回落角色），故不能直接靠 ORM 属性映射。"""
+    return AdminOut(
+        id=admin.id,
+        username=admin.username,
+        role=admin.role,
+        permissions=admin_permissions(admin),
+        wechat_openid=admin.wechat_openid,
+        nickname=admin.nickname,
+        is_active=admin.is_active,
+        last_login_at=admin.last_login_at,
+        created_at=admin.created_at,
+    )
 
 
-def _assert_not_last_super_admin(db: Session, admin: Admin, next_role: str | None = None, next_active: bool | None = None) -> None:
-    will_remain_super = (next_role or admin.role) == 'super_admin' and (admin.is_active if next_active is None else next_active)
-    if will_remain_super:
+def _assert_admin_still_manageable(db: Session, admin: Admin, next_permissions: list[str], next_active: bool) -> None:
+    """禁止把后台改成「没有任何启用账号能进用户管理」，否则再没人能改权限或救回来。
+
+    编辑与删除共用：把 next_active 传 False、next_permissions 传空即等价于「该账号不再可管理」。
+    """
+    keeps_control = 'users' in next_permissions and next_active
+    if keeps_control:
         return
-    active_super_count = db.query(Admin).filter(Admin.role == 'super_admin', Admin.is_active.is_(True)).count()
-    if admin.role == 'super_admin' and admin.is_active and active_super_count <= 1:
-        raise HTTPException(status_code=400, detail='Cannot disable or downgrade the last super admin')
+    if 'users' not in admin_permissions(admin) or not admin.is_active:
+        return  # 该账号本来就不算数，动它不影响可管理账号的数量
+    others = db.query(Admin).filter(Admin.id != admin.id, Admin.is_active.is_(True)).all()
+    if any('users' in admin_permissions(other) for other in others):
+        return
+    raise HTTPException(status_code=400, detail='必须保留至少一个启用且拥有「用户管理」权限的账号')
 
 
 def _apply_admin_payload(admin: Admin, payload: AdminUpsert, db: Session, is_create: bool = False) -> None:
@@ -48,10 +66,19 @@ def _apply_admin_payload(admin: Admin, payload: AdminUpsert, db: Session, is_cre
         openid_owner = db.query(Admin).filter(Admin.wechat_openid == payload.wechat_openid, Admin.id != (admin.id or 0)).first()
         if openid_owner:
             raise HTTPException(status_code=409, detail='WeChat openid already bound')
+    if payload.permissions is not None:
+        unknown = [item for item in payload.permissions if item not in ALL_PERMISSIONS]
+        if unknown:
+            raise HTTPException(status_code=400, detail=f'未知权限：{unknown}')
     if not is_create:
-        _assert_not_last_super_admin(db, admin, payload.role, payload.is_active)
+        next_permissions = payload.permissions if payload.permissions is not None else admin_permissions(admin)
+        _assert_admin_still_manageable(db, admin, next_permissions, payload.is_active)
     admin.username = username
     admin.role = payload.role
+    if payload.permissions is not None:
+        # 按 ALL_PERMISSIONS 的顺序落库并去重，避免同一权限集合因顺序不同产生无意义差异
+        granted = set(payload.permissions)
+        admin.permissions = json.dumps([item for item in ALL_PERMISSIONS if item in granted], ensure_ascii=False)
     admin.wechat_openid = payload.wechat_openid or None
     admin.nickname = payload.nickname or None
     admin.is_active = payload.is_active
@@ -99,6 +126,9 @@ def login(payload: AdminLogin, db: Session = Depends(get_db)):
     admin = db.query(Admin).filter(Admin.username == payload.username, Admin.is_active.is_(True)).first()
     if not admin or not verify_password(payload.password, admin.password_hash):
         raise HTTPException(status_code=401, detail='Invalid username or password')
+    admin.last_login_at = datetime.now()
+    db.commit()
+    db.refresh(admin)
     return AdminAuthOut(
         access_token=create_access_token(admin.username),
         admin=_admin_payload(admin),
@@ -798,7 +828,8 @@ def list_admin_users(
     db: Session = Depends(get_db),
     _: Admin = Depends(require_admin_permission('users')),
 ):
-    return db.query(Admin).order_by(Admin.id.asc()).all()
+    admins = db.query(Admin).order_by(Admin.id.asc()).all()
+    return [_admin_payload(admin) for admin in admins]
 
 
 @router.post('/admin-users', response_model=AdminOut)
@@ -814,7 +845,22 @@ def create_admin_user(
     db.add(admin)
     db.commit()
     db.refresh(admin)
-    return admin
+    return _admin_payload(admin)
+
+
+@router.post('/me/password', response_model=AdminOut)
+def change_my_password(
+    payload: AdminSelfPasswordUpdate,
+    db: Session = Depends(get_db),
+    admin: Admin = Depends(get_current_admin),
+):
+    """改自己的密码：只要登录着就能改，不需要 users 权限，但必须验旧密码。"""
+    if not verify_password(payload.old_password, admin.password_hash):
+        raise HTTPException(status_code=400, detail='原密码不正确')
+    admin.password_hash = hash_password(payload.new_password)
+    db.commit()
+    db.refresh(admin)
+    return _admin_payload(admin)
 
 
 @router.patch('/admin-users/{admin_id}/password', response_model=AdminOut)
@@ -830,7 +876,7 @@ def reset_admin_password(
     admin.password_hash = hash_password(payload.password)
     db.commit()
     db.refresh(admin)
-    return admin
+    return _admin_payload(admin)
 
 
 @router.patch('/admin-users/{admin_id}', response_model=AdminOut)
@@ -846,7 +892,28 @@ def update_admin_user(
     _apply_admin_payload(admin, payload, db)
     db.commit()
     db.refresh(admin)
-    return admin
+    return _admin_payload(admin)
+
+
+@router.delete('/admin-users/{admin_id}')
+def delete_admin_user(
+    admin_id: int,
+    db: Session = Depends(get_db),
+    current: Admin = Depends(require_admin_permission('users')),
+):
+    """删除后台账号。账号不挂在任何业务数据上（订单不记操作人），删除不留痕。
+
+    因此只挡住两种情况：删自己，以及删掉最后一个能进用户管理的账号。
+    """
+    admin = db.query(Admin).filter(Admin.id == admin_id).first()
+    if not admin:
+        raise HTTPException(status_code=404, detail='Admin not found')
+    if admin.id == current.id:
+        raise HTTPException(status_code=400, detail='不能删除当前登录的账号')
+    _assert_admin_still_manageable(db, admin, [], False)
+    db.delete(admin)
+    db.commit()
+    return {'ok': True}
 
 
 @router.get('/customers', response_model=list[CustomerAdminOut])

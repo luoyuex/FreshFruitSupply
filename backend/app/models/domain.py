@@ -273,6 +273,9 @@ class Admin(TimestampMixin, Base):
     username: Mapped[str] = mapped_column(String(60), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(32), default='super_admin', index=True)
+    # 按模块授予的权限点（JSON 数组）。为空时回落到角色的默认权限，见 deps.admin_permissions
+    permissions: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     wechat_openid: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
     nickname: Mapped[str | None] = mapped_column(String(80), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

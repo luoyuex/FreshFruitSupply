@@ -1,8 +1,10 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useStore } from 'vuex'
 import {
   createAdminUser,
+  deleteAdminUser,
   deleteCustomerCoupon,
   grantCoupon,
   listAdminUsers,
@@ -12,9 +14,22 @@ import {
   resetAdminPassword,
   updateAdminUser,
 } from '../api'
-import { dateText, dateTimeSec, money, roleLabel, statusLabel, statusTone } from '../utils/format'
+import {
+  PERMISSION_OPTIONS,
+  ROLE_PRESETS,
+  dateText,
+  dateTimeSec,
+  money,
+  permissionLabels,
+  roleLabel,
+  statusLabel,
+  statusTone,
+} from '../utils/format'
 
 const activeTab = ref('admins')
+const store = useStore()
+// 当前登录账号不允许自删
+const currentAdminId = computed(() => store.state.admin?.id)
 const loading = ref(false)
 const admins = ref([])
 const customers = ref([])
@@ -32,7 +47,12 @@ const couponsLoading = ref(false)
 const grantTemplateId = ref(null)
 
 function blankAdmin() {
-  return { id: null, username: '', password: '', role: 'order_admin', nickname: '', wechat_openid: '', is_active: true }
+  return { id: null, username: '', password: '', role: 'order_admin', permissions: [], nickname: '', wechat_openid: '', is_active: true }
+}
+
+// 编辑弹窗里权限勾选的初值：账号未显式授权时，展示其角色的默认权限集
+function permissionsOf(row) {
+  return (row.permissions && row.permissions.length ? row.permissions : ROLE_PRESETS[row.role] || []).slice()
 }
 
 const filteredCustomers = computed(() => {
@@ -68,8 +88,14 @@ async function load() {
 }
 
 function openAdmin(row, prefill = null) {
-  Object.assign(form, row ? { ...row, password: '' } : { ...blankAdmin(), ...(prefill || {}) })
+  const base = row ? { ...row, password: '', permissions: permissionsOf(row) } : blankAdmin()
+  Object.assign(form, base, prefill || {})
   dialog.value = true
+}
+
+// 换角色即按预设覆盖勾选：多数人只在这两档之间切，切完仍可自行加减
+function applyRolePreset(role) {
+  form.permissions = (ROLE_PRESETS[role] || []).slice()
 }
 
 async function saveAdmin() {
@@ -85,9 +111,14 @@ async function saveAdmin() {
     ElMessage.warning('密码至少 6 位')
     return
   }
+  if (!form.permissions.length) {
+    ElMessage.warning('至少勾选一个模块权限')
+    return
+  }
   const payload = {
     username: form.username.trim(),
     role: form.role,
+    permissions: form.permissions,
     nickname: form.nickname || null,
     wechat_openid: form.wechat_openid || null,
     is_active: !!form.is_active,
@@ -104,6 +135,21 @@ async function saveAdmin() {
     ElMessage.error(error.message)
   } finally {
     saving.value = false
+  }
+}
+
+async function removeAdmin(row) {
+  try {
+    await ElMessageBox.confirm(`确认删除账号「${row.username}」？删除后不可恢复，历史订单不受影响。`, '删除账号', { type: 'warning' })
+  } catch (error) {
+    return
+  }
+  try {
+    await deleteAdminUser(row.id)
+    ElMessage.success('已删除')
+    await load()
+  } catch (error) {
+    ElMessage.error(error.message)
   }
 }
 
@@ -211,8 +257,13 @@ onMounted(load)
     <el-table v-if="activeTab === 'admins'" v-loading="loading" :data="admins" border>
       <el-table-column label="用户名" prop="username" min-width="150" />
       <el-table-column label="昵称" prop="nickname" min-width="120" />
-      <el-table-column label="角色" width="130">
+      <el-table-column label="角色" width="120">
         <template #default="{ row }"><el-tag :type="row.role === 'super_admin' ? 'danger' : 'primary'">{{ roleLabel(row.role) }}</el-tag></template>
+      </el-table-column>
+      <el-table-column label="模块权限" min-width="240">
+        <template #default="{ row }">
+          <el-tag v-for="label in permissionLabels(row.permissions)" :key="label" size="small" class="perm-tag">{{ label }}</el-tag>
+        </template>
       </el-table-column>
       <el-table-column label="绑定微信 openid" min-width="220">
         <template #default="{ row }"><span :class="row.wechat_openid ? '' : 'muted'">{{ row.wechat_openid || '未绑定' }}</span></template>
@@ -220,13 +271,17 @@ onMounted(load)
       <el-table-column label="状态" width="90">
         <template #default="{ row }"><el-tag :type="row.is_active ? 'success' : 'info'">{{ row.is_active ? '启用' : '停用' }}</el-tag></template>
       </el-table-column>
+      <el-table-column label="最近登录" width="170">
+        <template #default="{ row }"><span :class="{ muted: !row.last_login_at }">{{ row.last_login_at ? dateTimeSec(row.last_login_at) : '从未登录' }}</span></template>
+      </el-table-column>
       <el-table-column label="创建时间" width="180">
         <template #default="{ row }">{{ dateTimeSec(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="200" fixed="right">
+      <el-table-column label="操作" width="260" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="openAdmin(row)">编辑</el-button>
           <el-button size="small" type="warning" plain @click="resetPassword(row)">重置密码</el-button>
+          <el-button size="small" type="danger" plain :disabled="row.id === currentAdminId" @click="removeAdmin(row)">删除</el-button>
         </template>
       </el-table-column>
       <template #empty><span class="muted">还没有管理员账号</span></template>
@@ -278,10 +333,16 @@ onMounted(load)
           <el-input v-model="form.password" type="password" show-password :placeholder="form.id ? '留空表示不修改' : '至少 6 位'" />
         </el-form-item>
         <el-form-item label="角色">
-          <el-select v-model="form.role" style="width: 100%">
-            <el-option label="超级管理员（全部模块）" value="super_admin" />
-            <el-option label="订单管理员（仅订单）" value="order_admin" />
+          <el-select v-model="form.role" style="width: 100%" @update:model-value="applyRolePreset">
+            <el-option label="超级管理员（默认全部模块）" value="super_admin" />
+            <el-option label="订单管理员（默认仅订单）" value="order_admin" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="模块权限">
+          <el-checkbox-group v-model="form.permissions" class="perm-group">
+            <el-checkbox v-for="item in PERMISSION_OPTIONS" :key="item.key" :value="item.key">{{ item.label }}</el-checkbox>
+          </el-checkbox-group>
+          <div class="muted perm-tip">切换上方角色会按默认值重填，仍可逐项增减。</div>
         </el-form-item>
         <el-form-item label="昵称">
           <el-input v-model="form.nickname" placeholder="选填" />
@@ -344,5 +405,20 @@ onMounted(load)
 <style scoped>
 .tabs {
   margin-bottom: -14px;
+}
+
+.perm-tag {
+  margin: 0 6px 2px 0;
+}
+
+.perm-group {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px 0;
+}
+
+.perm-tip {
+  font-size: 12px;
+  line-height: 1.6;
 }
 </style>

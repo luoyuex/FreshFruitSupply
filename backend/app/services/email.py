@@ -109,7 +109,9 @@ def _notification_record(db: Session, order: Order, kind: str, refunded_amount: 
         .first()
     )
     if not record:
-        record = OrderNotification(order_id=order.id, kind=kind, status='pending')
+        # attempts 必须显式给 0：列上的 DEFAULT 只在 INSERT 时生效，内存里仍是 None，
+        # 下面 record.attempts += 1 会直接 TypeError，且它在 try 之外、会冒泡成 500
+        record = OrderNotification(order_id=order.id, kind=kind, status='pending', attempts=0)
         db.add(record)
     if refunded_amount is not None:
         record.refund_amount = refunded_amount
