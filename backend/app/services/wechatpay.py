@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import time
 import uuid
 from decimal import Decimal, ROUND_HALF_UP
@@ -36,7 +37,22 @@ from fastapi import HTTPException
 
 from app.core.config import settings
 
+logger = logging.getLogger(__name__)
+
 WECHAT_API_HOST = 'https://api.weixin.qq.com'
+
+# 已知 B2b 错误码 → 给操作员看的一句话。微信原始 errmsg / rid 只进日志和订单留档，不弹页面
+_API_ERROR_MESSAGES = {
+    9403201: '微信未找到这笔原交易，无法退款',
+}
+
+
+def pay_error(message: str, reason: str) -> dict:
+    """把错误拆成两份：message 弹给操作员，reason 留给日志和订单的失败原因字段。
+
+    微信返回体、rid、配置项名这类内容对排障有用，但直接弹在页面上就是「系统底层错误」。
+    """
+    return {'message': message, 'reason': reason}
 
 
 def is_mock() -> bool:
@@ -72,7 +88,8 @@ def _env_appkey() -> str:
     if settings.wechat_pay_env == 1:
         appkey = settings.wechat_pay_sandbox_appkey
         if not appkey:
-            raise HTTPException(status_code=500, detail='WECHAT_PAY_SANDBOX_APPKEY is not configured')
+            raise HTTPException(status_code=500, detail=pay_error(
+                '支付服务未就绪，请联系技术处理', 'WECHAT_PAY_SANDBOX_APPKEY is not configured'))
         return appkey
     return _server_appkey()
 
@@ -81,7 +98,8 @@ def _server_appkey() -> str:
     """服务端 API（查单/退款/关单）的 pay_sig 钥匙：官方规定只用现网 AppKey，不区分环境。"""
     appkey = settings.wechat_pay_appkey
     if not appkey:
-        raise HTTPException(status_code=500, detail='WECHAT_PAY_APPKEY (现网) is not configured')
+        raise HTTPException(status_code=500, detail=pay_error(
+            '支付服务未就绪，请联系技术处理', 'WECHAT_PAY_APPKEY (现网) is not configured'))
     return appkey
 
 
@@ -91,12 +109,11 @@ def _ensure_pay_config() -> None:
         'WECHAT_PAY_MCHID': settings.wechat_pay_mchid,
         'WECHAT_PAY_APPKEY': settings.wechat_pay_appkey,
     }.items() if not value]
-    try:
-        _env_appkey()
-    except HTTPException as exc:
-        missing.append(exc.detail)
+    if settings.wechat_pay_env == 1 and not settings.wechat_pay_sandbox_appkey:
+        missing.append('WECHAT_PAY_SANDBOX_APPKEY')
     if missing:
-        raise HTTPException(status_code=500, detail=f'WeChat Pay is not configured: {", ".join(missing)}')
+        raise HTTPException(status_code=500, detail=pay_error(
+            '支付服务未就绪，请联系技术处理', f'WeChat Pay is not configured: {", ".join(missing)}'))
 
 
 # --------------------------------------------------------------------------
@@ -122,7 +139,8 @@ def create_common_payment(payment, session_key: str, description: str | None = N
         }
     _ensure_pay_config()
     if not session_key:
-        raise HTTPException(status_code=400, detail='Missing session_key for payment signing')
+        raise HTTPException(status_code=400, detail=pay_error(
+            '登录状态异常，请重新登录后再支付', 'Missing session_key for payment signing'))
 
     sign_data = _dumps({
         'mchid': settings.wechat_pay_mchid,
@@ -186,7 +204,8 @@ def refund(payment, description: str = '订单取消退款') -> dict:
     })
     refund_id = result.get('refund_id')
     if not refund_id:
-        raise HTTPException(status_code=502, detail='WeChat B2b refund did not return refund_id')
+        raise HTTPException(status_code=502, detail=pay_error(
+            '微信未受理这笔退款，请稍后重试', f'refund response missing refund_id: {result}'))
     return {'refund_id': refund_id}
 
 
@@ -226,15 +245,24 @@ def _b2b_post(url_path: str, payload: dict) -> dict:
                 raw = response.read().decode('utf-8')
         except urllib.error.HTTPError as exc:  # noqa: F821 - urllib.error 随 urllib.request 导入
             detail = exc.read().decode('utf-8', errors='ignore')
-            raise HTTPException(status_code=502, detail=f'WeChat B2b API error: {detail}') from exc
+            logger.warning('B2b 接口 HTTP 异常 uri=%s code=%s body=%s', url_path, exc.code, detail[:500])
+            raise HTTPException(status_code=502, detail=pay_error(
+                '微信服务返回异常，请稍后重试', f'HTTP {exc.code} {url_path}: {detail[:300]}')) from exc
         except urllib.error.URLError as exc:
-            raise HTTPException(status_code=502, detail=f'WeChat B2b API unreachable: {exc.reason}') from exc
+            logger.warning('B2b 接口网络异常 uri=%s reason=%s', url_path, exc.reason)
+            raise HTTPException(status_code=502, detail=pay_error(
+                '无法连接微信服务，请检查网络后重试', f'URLError {url_path}: {exc.reason}')) from exc
         result = json.loads(raw) if raw else {}
         if result.get('errcode') in (40001, 42001) and not force_refresh:
             continue  # 缓存的 token 已失效：强刷后重试一次
         break
     errcode = result.get('errcode')
     if errcode not in (None, 0):
-        # 9403201 订单不存在等业务性失败，交由调用方按失败处理
-        raise HTTPException(status_code=502, detail=f'WeChat B2b API error {errcode}: {result.get("errmsg")}')
+        # 9403201 订单不存在等业务性失败，交由调用方按失败处理。rid 只进日志：它对页面没用，
+        # 但报给微信客服时有用
+        logger.warning('B2b 接口业务失败 uri=%s errcode=%s errmsg=%s rid=%s',
+                       url_path, errcode, result.get('errmsg'), result.get('rid'))
+        raise HTTPException(status_code=502, detail=pay_error(
+            _API_ERROR_MESSAGES.get(errcode, '微信处理该请求失败，请稍后重试'),
+            f'微信接口 {url_path} 返回 {errcode}: {result.get("errmsg")} rid={result.get("rid")}'))
     return result

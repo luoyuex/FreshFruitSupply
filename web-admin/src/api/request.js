@@ -29,6 +29,8 @@ function extractMessage(error, fallback) {
   const detail = error.response?.data?.detail ?? error.response?.data?.message
   if (!detail) return fallback
   if (Array.isArray(detail)) return detail.map((item) => item.msg).join('；')
+  // 微信支付类错误带 {message, reason}：页面只弹 message，技术原因留在订单的失败提示里
+  if (typeof detail === 'object') return detail.message || fallback
   return detail
 }
 

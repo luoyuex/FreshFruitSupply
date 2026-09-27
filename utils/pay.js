@@ -11,11 +11,23 @@ export function getWxLoginCode() {
       provider: 'weixin',
       success: (res) => {
         if (res.code) resolve(res.code)
-        else reject(new Error(res.errMsg || '微信登录失败'))
+        else reject(new Error('微信登录失败，请重试'))
       },
-      fail: (err) => reject(new Error(err.errMsg || '微信登录失败')),
+      fail: (err) => {
+        console.warn('[wx.login] 失败', err)
+        reject(new Error('微信登录失败，请重试'))
+      },
     })
   })
+}
+
+// 商户单号在 signData 里，出问题时得知道是哪一笔
+function tradeNoOf(params) {
+  try {
+    return JSON.parse(params.signData || '{}').out_trade_no || ''
+  } catch (error) {
+    return 'signData 非 JSON'
+  }
 }
 
 // B2b 支付：uni-app 无封装，直接调微信基础库的 wx.requestCommonPayment
@@ -32,24 +44,16 @@ function requestCommonPayment(params) {
       signature: params.signature,
       success: () => resolve(),
       fail: (err) => {
-        // TODO 临时取证：webapi_wxa 这类网关层报错只看 errMsg 不够，定位后删除本段
-        let tradeNo = ''
-        try {
-          tradeNo = JSON.parse(params.signData || '{}').out_trade_no || ''
-        } catch (e) {
-          tradeNo = 'signData非JSON'
-        }
-        uni.showModal({
-          title: `支付失败 单号:${tradeNo}`,
-          content: JSON.stringify(err),
-          showCancel: false,
-        })
+        // 用户在收银台点「取消」也走 fail（errMsg 带 cancel、errno -2）：这是正常操作，
+        // 订单留在待支付，不打任何提示
         if (/cancel/i.test(err.errMsg || '')) {
           reject(new Error('支付已取消'))
           return
         }
-        // 透出微信原始 errMsg：像 702005 这类拒绝只有微信侧知道原因，后端看不到
-        reject(new Error(err.errMsg || `支付失败(${err.errCode ?? ''})`))
+        // 真失败：微信原始 errMsg 对定位有用（702005 这类拒绝后端看不到），
+        // 但它属于调试信息，只出控制台，界面给一句能照着做的话
+        console.warn('[requestCommonPayment] 支付失败', tradeNoOf(params), err)
+        reject(new Error('支付未完成，请稍后重试'))
       },
     })
   })

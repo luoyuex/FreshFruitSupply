@@ -236,8 +236,14 @@ const visibleNotices = computed(() => {
 async function doResend(order, kind) {
   resendingKey.value = `${order.id}:${kind}`
   try {
-    await resendOrderNotice(order.id, kind)
-    ElMessage.success(`${noticeLabel(kind)}已重发`)
+    const notices = await resendOrderNotice(order.id, kind)
+    const record = (notices || []).find((item) => item.kind === kind)
+    // 后端发信失败只记状态、不抛错，所以要按返回的状态提示，否则失败也报了成功
+    if (record && record.status !== 'sent') {
+      ElMessage.warning(`${noticeLabel(kind)}重发仍未成功，原因见该行提示`)
+    } else {
+      ElMessage.success(`${noticeLabel(kind)}已重发`)
+    }
     await loadOrders()
   } catch (error) {
     ElMessage.error(error.message)

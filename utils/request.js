@@ -14,11 +14,20 @@ function setCustomerToken(token) {
   uni.setStorageSync('customer_token', token)
 }
 
+// 后端 detail 有三种形态：中文字符串、FastAPI 校验错误数组、微信支付类错误的 {message, reason}。
+// 最后一种的 reason 是排障用的（微信返回体、rid、配置项名），不弹给用户和商户。
+function errorDetailMessage(data, fallback) {
+  const detail = data?.detail || data?.message
+  if (!detail) return fallback
+  if (Array.isArray(detail)) return detail.map((item) => item.msg).join('；')
+  if (typeof detail === 'object') return detail.message || fallback
+  return detail
+}
+
 function uploadErrorMessage(data, fallback) {
   try {
     const parsed = typeof data === 'string' ? JSON.parse(data) : data
-    const message = parsed?.detail || parsed?.message
-    return Array.isArray(message) ? message.map((item) => item.msg).join('；') : (message || fallback)
+    return errorDetailMessage(parsed, fallback)
   } catch (error) {
     return data || fallback
   }
@@ -128,8 +137,7 @@ async function _handle401Refresh(options, admin) {
           resolve(res.data)
           return
         }
-        const message = res.data?.detail || res.data?.message || '请求失败'
-        reject(new Error(Array.isArray(message) ? message.map((item) => item.msg).join('；') : message))
+        reject(new Error(errorDetailMessage(res.data, '请求失败')))
       },
       fail: (err) => reject(new Error(err.errMsg || '网络连接失败')),
     })
@@ -179,8 +187,7 @@ export function request(options) {
           uni.removeStorageSync('admin_permissions')
         }
 
-        const message = res.data?.detail || res.data?.message || '请求失败'
-        reject(new Error(Array.isArray(message) ? message.map((item) => item.msg).join('；') : message))
+        reject(new Error(errorDetailMessage(res.data, '请求失败')))
       },
       fail: (err) => reject(new Error(err.errMsg || '网络连接失败')),
     })

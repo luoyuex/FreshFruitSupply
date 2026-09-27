@@ -281,6 +281,18 @@ def delivery_sheet(
     return orders
 
 
+def _error_reason(exc: HTTPException) -> str:
+    """从异常里取「留档用的技术原因」。
+
+    微信支付类错误带的是 {message, reason}：message 弹给操作员，reason 才适合记在订单上；
+    其余业务校验仍是纯中文字符串，两者都直接显示。
+    """
+    detail = exc.detail
+    if isinstance(detail, dict):
+        return str(detail.get('reason') or detail.get('message') or '')
+    return str(detail)
+
+
 def _cancel_or_record_error(db: Session, order: Order, refund: bool) -> Decimal:
     """取消订单；退款失败时把原因留在订单上，再把原始错误抛出去。
 
@@ -291,7 +303,7 @@ def _cancel_or_record_error(db: Session, order: Order, refund: bool) -> Decimal:
         refunded = cancel_order(db, order, refund=refund)
     except HTTPException as exc:
         db.rollback()
-        order.cancel_error = str(exc.detail)[:300]
+        order.cancel_error = _error_reason(exc)[:300]
         db.commit()
         raise
     order.cancel_error = None
@@ -423,7 +435,7 @@ async def refund_order_payments(
     except HTTPException as exc:
         # 微信报错会让整批流水回滚，页面刷新后看不出任何痕迹，故把原因落到订单上再抛出
         db.rollback()
-        order.cancel_error = str(exc.detail)[:300]
+        order.cancel_error = _error_reason(exc)[:300]
         db.commit()
         raise
     order.cancel_error = None
