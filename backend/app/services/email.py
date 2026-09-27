@@ -14,7 +14,15 @@ KIND_UPDATED = 'updated'  # 改单生效，按最新明细配货
 KIND_REFUND_CUSTOMER = 'refund_customer'  # 客户自助取消并退款
 KIND_REFUND_ADMIN = 'refund_admin'  # 商户在后台发起退款/取消
 KIND_STRAY_PAYMENT = 'stray_payment'  # 订单已关闭后才到账，已原路退回
-NOTIFY_KINDS = (KIND_DISPATCH, KIND_UPDATED, KIND_REFUND_CUSTOMER, KIND_REFUND_ADMIN, KIND_STRAY_PAYMENT)
+KIND_CANCEL_REQUEST = 'cancel_request'  # 已确认订单申请取消，等商户审核
+NOTIFY_KINDS = (
+    KIND_DISPATCH,
+    KIND_UPDATED,
+    KIND_REFUND_CUSTOMER,
+    KIND_REFUND_ADMIN,
+    KIND_STRAY_PAYMENT,
+    KIND_CANCEL_REQUEST,
+)
 
 _KIND_SUBJECTS = {
     KIND_DISPATCH: '新的水果预订订单',
@@ -22,6 +30,7 @@ _KIND_SUBJECTS = {
     KIND_REFUND_CUSTOMER: '客户取消并退款',
     KIND_REFUND_ADMIN: '商户后台退款',
     KIND_STRAY_PAYMENT: '订单关闭后到账已退回',
+    KIND_CANCEL_REQUEST: '客户申请取消订单',
 }
 
 
@@ -31,7 +40,7 @@ def _ensure_smtp_configured() -> None:
 
 
 def _order_detail_lines(order: Order) -> list[str]:
-    """订单公共明细（收货信息 + 商品 + 金额），五类通知共用。"""
+    """订单公共明细（收货信息 + 商品 + 金额），六类通知共用。"""
     lines = [
         f'订单号：{order.order_no}',
         f'订单状态：{order.status}',
@@ -78,6 +87,11 @@ def _build_body(order: Order, kind: str, refunded_amount: Decimal | None) -> str
         head = ['客户已完成支付，请安排配货。']
     elif kind == KIND_UPDATED:
         head = ['客户修改了该订单，以下为最新明细，请按新明细配货。']
+    elif kind == KIND_CANCEL_REQUEST:
+        head = [
+            '客户申请取消该订单，请前往后台审核；同意后退款项，驳回则继续配货。',
+            f'申请理由：{order.cancel_request_reason or "未填写"}。',
+        ]
     else:
         head = _refund_lines(kind, refunded_amount)
     return '\n'.join([*head, '', *_order_detail_lines(order)])

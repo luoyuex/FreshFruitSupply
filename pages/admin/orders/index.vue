@@ -16,11 +16,16 @@ const dateEnabled = shallowRef(true)
 const activeStatus = shallowRef('')
 const keyword = shallowRef('')
 const selectedIds = shallowRef(new Set())
+// 取消申请不改订单状态，靠状态筛选筛不出来，单独给一个开关
+const cancelOnly = shallowRef(false)
+const pendingCancelCount = computed(() => orders.value.filter((order) => order.cancel_request_status === 'pending').length)
+const cancelPillLabel = computed(() => (pendingCancelCount.value ? `待审核取消(${pendingCancelCount.value})` : '待审核取消'))
 const filteredOrders = computed(() => {
   const text = keyword.value.trim().toLowerCase()
-  const statusOrders = activeStatus.value ? orders.value.filter((order) => order.status === activeStatus.value) : orders.value
-  if (!text) return statusOrders
-  return statusOrders.filter((order) => {
+  let list = activeStatus.value ? orders.value.filter((order) => order.status === activeStatus.value) : orders.value
+  if (cancelOnly.value) list = list.filter((order) => order.cancel_request_status === 'pending')
+  if (!text) return list
+  return list.filter((order) => {
     const address = `${order.province || ''}${order.city || ''}${order.district || ''}${order.detail_address || ''}`
     return [order.order_no, order.receiver_name, order.receiver_phone, address]
       .filter(Boolean)
@@ -150,6 +155,91 @@ function bulkChangeByPicker(event) {
   bulkChangeStatus(statuses[event.detail.value])
 }
 
+function toggleCancelOnly() {
+  cancelOnly.value = !cancelOnly.value
+  clearSelection()
+}
+
+const CANCEL_REQUEST_LABELS = {
+  pending: '取消申请审核中',
+  approved: '取消申请已同意',
+  rejected: '取消申请已驳回',
+}
+
+function cancelRequestText(order) {
+  const parts = [
+    CANCEL_REQUEST_LABELS[order.cancel_request_status] || '',
+    order.cancel_request_reason ? `理由：${order.cancel_request_reason}` : '',
+    order.cancel_request_note ? `回复：${order.cancel_request_note}` : '',
+  ]
+  return parts.filter(Boolean).join(' · ')
+}
+
+// 同意即退款并关单，不可逆，保留二次确认；驳回需要填一个用户能看到的理由
+function reviewCancel(order, decision) {
+  const run = async (note) => {
+    loading.value = true
+    try {
+      const updated = await request({
+        url: `/admin/orders/${order.id}/cancel-request`,
+        method: 'POST',
+        admin: true,
+        data: { decision, note: note || null },
+      })
+      orders.value = orders.value.map((item) => (item.id === order.id ? { ...item, ...updated } : item))
+      uni.showToast({ title: decision === 'approve' ? '已同意并退款' : '已驳回', icon: 'none' })
+    } catch (err) {
+      uni.showToast({ title: err.message, icon: 'none' })
+    } finally {
+      loading.value = false
+    }
+  }
+  if (decision === 'reject') {
+    uni.showModal({
+      title: '驳回取消申请',
+      editable: true,
+      placeholderText: '填写驳回原因（用户可见）',
+      success: (res) => {
+        if (res.confirm) run((res.content || '').trim())
+      },
+    })
+    return
+  }
+  uni.showModal({
+    title: '同意取消',
+    content: `将原路退回 ¥${money(order.paid_amount)} 并置为已取消，确认？`,
+    success: (res) => {
+      if (res.confirm) run('')
+    },
+  })
+}
+
+// 微信退不了的单（原交易查不到、超期）只能只关单，款项线下自行处理
+function closeWithoutRefund(order) {
+  uni.showModal({
+    title: '仅关单不退款',
+    content: `订单将置为已取消但不发起退款，已收 ¥${money(order.paid_amount)} 需线下自行处理。确认？`,
+    success: async (res) => {
+      if (!res.confirm) return
+      loading.value = true
+      try {
+        const updated = await request({
+          url: `/admin/orders/${order.id}`,
+          method: 'PATCH',
+          admin: true,
+          data: { status: 'cancelled', refund: false },
+        })
+        orders.value = orders.value.map((item) => (item.id === order.id ? { ...item, ...updated } : item))
+        uni.showToast({ title: '已关单', icon: 'none' })
+      } catch (err) {
+        uni.showToast({ title: err.message, icon: 'none' })
+      } finally {
+        loading.value = false
+      }
+    },
+  })
+}
+
 async function loadDeliverySheet() {
   loading.value = true
   try {
@@ -248,6 +338,7 @@ onPullDownRefresh(async () => {
         <picker :range="statusFilterOptions.map((item) => item.label)" @change="changeStatusFilter">
           <view class="filter-pill">状态：{{ activeStatusLabel }}</view>
         </picker>
+        <button class="filter-mini cancel" :class="{ active: cancelOnly }" @tap="toggleCancelOnly">{{ cancelPillLabel }}</button>
         <input v-model="keyword" class="filter-search" placeholder="搜订单号/姓名/手机号/地址" />
       </view>
     </view>
@@ -280,6 +371,12 @@ onPullDownRefresh(async () => {
       <view class="info">{{ order.receiver_name }} {{ order.receiver_phone }}</view>
       <view class="info">{{ order.province }}{{ order.city }}{{ order.district }}{{ order.detail_address }}</view>
       <view class="info">邮件通知：{{ statusLabel(order.email_notify_status) }}</view>
+      <view v-if="order.cancel_request_status" class="cancel-request" :class="order.cancel_request_status">
+        <text>{{ cancelRequestText(order) }}</text>
+      </view>
+      <view v-if="order.cancel_error" class="cancel-error">
+        <text>取消失败：{{ order.cancel_error }}</text>
+      </view>
       <view v-for="item in order.items" :key="item.id" class="item">
         <text>{{ item.fruit_name }} x {{ item.quantity }}{{ item.unit }}</text>
         <text>¥{{ money(item.subtotal) }}</text>
@@ -291,6 +388,13 @@ onPullDownRefresh(async () => {
         </view>
       </view>
       <view class="total">预估总价 ¥{{ money(order.estimated_total) }}</view>
+      <view v-if="order.cancel_request_status === 'pending'" class="review-row">
+        <button class="review-btn ok" @tap.stop="reviewCancel(order, 'approve')">同意取消</button>
+        <button class="review-btn no" @tap.stop="reviewCancel(order, 'reject')">驳回</button>
+      </view>
+      <view v-else-if="order.cancel_error && Number(order.paid_amount) > 0" class="review-row">
+        <button class="review-btn warn" @tap.stop="closeWithoutRefund(order)">仅关单不退款</button>
+      </view>
       <picker :range="statuses.map(statusLabel)" @change="changeStatus(order, $event)">
         <view class="picker">修改状态</view>
       </picker>
@@ -373,5 +477,15 @@ onPullDownRefresh(async () => {
 .reissue-line { margin-top: 8rpx; color: #3d5a2f; font-size: 24rpx; line-height: 1.5; }
 .delivery-total { margin-top: 16rpx; text-align: right; color: #173b16; font-size: 25rpx; font-weight: 800; }
 .picker { margin-top: 18rpx; height: 68rpx; line-height: 68rpx; text-align: center; border-radius: 999rpx; color: #fff; background: #ef7d00; }
-.select-all::after, .bulk-btn::after, .print-btn::after, .filter-mini::after { border: none; }
+.filter-mini.cancel { width: auto; min-width: 132rpx; padding: 0 20rpx; color: #b06a00; background: #fff7e6; }
+.filter-mini.cancel.active { color: #fff; background: #ef7d00; }
+.cancel-request { margin-top: 12rpx; padding: 14rpx 18rpx; border-radius: 14rpx; background: #fff7e6; color: #b06a00; font-size: 24rpx; line-height: 1.5; }
+.cancel-request.approved, .cancel-request.rejected { color: #60715c; background: #f0f2ed; }
+.cancel-error { margin-top: 12rpx; padding: 14rpx 18rpx; border-radius: 14rpx; background: #fdecec; color: #c93c3c; font-size: 24rpx; line-height: 1.5; }
+.review-row { display: flex; gap: 14rpx; margin-top: 16rpx; }
+.review-btn { flex: 1; height: 66rpx; line-height: 66rpx; border-radius: 999rpx; color: #fff; font-size: 25rpx; font-weight: 900; }
+.review-btn.ok { background: #2f6b23; }
+.review-btn.no { background: #60715c; }
+.review-btn.warn { background: #ef7d00; }
+.select-all::after, .bulk-btn::after, .print-btn::after, .filter-mini::after, .review-btn::after { border: none; }
 </style>

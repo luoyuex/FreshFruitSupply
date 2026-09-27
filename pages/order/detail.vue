@@ -16,8 +16,17 @@ const loading = shallowRef(false)
 const loadFailed = shallowRef(false)
 const loginChecked = shallowRef(false)
 
-const { paying, payOrderNow, cancelOrder, canCancel, orderEditReason, addressText } =
-  createOrderActions({ onChanged: loadOrder })
+const {
+  paying,
+  payOrderNow,
+  cancelOrder,
+  canCancel,
+  canRequestCancel,
+  requestCancel,
+  cancelRequestHint,
+  orderEditReason,
+  addressText,
+} = createOrderActions({ onChanged: loadOrder })
 
 async function ensureLogin() {
   if (hasCustomerLogin()) return true
@@ -175,12 +184,18 @@ onPullDownRefresh(async () => {
       </view>
 
       <!-- 底部操作 -->
-      <view v-if="canCancel(order) || order.status === 'unpaid'" class="actions">
+      <view v-if="cancelRequestHint(order)" class="cancel-request-tip">{{ cancelRequestHint(order) }}</view>
+      <view v-if="canCancel(order) || canRequestCancel(order) || order.status === 'unpaid'" class="actions">
         <button
           v-if="canCancel(order)"
           class="cancel-order"
           @tap.stop="cancelOrder(order)"
         >取消订单</button>
+        <button
+          v-else-if="canRequestCancel(order)"
+          class="cancel-order"
+          @tap.stop="requestCancel(order)"
+        >申请取消</button>
         <button
           v-if="order.status === 'unpaid'"
           class="pay-order"
@@ -385,6 +400,17 @@ onPullDownRefresh(async () => {
   color: #999;
   font-size: 24rpx;
   text-align: center;
+}
+
+/* 取消申请的审核状态：比通用提示更醒目，避免用户以为还能操作或重复找客服 */
+.cancel-request-tip {
+  margin-top: 16rpx;
+  padding: 16rpx 20rpx;
+  border-radius: 16rpx;
+  background: #fff7e6;
+  color: #b06a00;
+  font-size: 26rpx;
+  line-height: 1.5;
 }
 
 .empty {

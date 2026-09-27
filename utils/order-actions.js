@@ -65,12 +65,58 @@ export function createOrderActions({ onChanged } = {}) {
     })
   }
 
-  // 商户尚未确认的订单（待支付/待确认）可自助取消；已确认及之后须联系客服
+  // 商户尚未确认的订单（待支付/待确认）可自助取消并直接退款
   function canCancel(order) {
     return ['unpaid', 'pending'].includes(order.status)
   }
 
+  // 已确认的订单可能已在备货，只能申请取消、由商户审核；审核中不再重复提交
+  function canRequestCancel(order) {
+    return order.status === 'confirmed' && order.cancel_request_status !== 'pending'
+  }
+
+  function requestCancel(order) {
+    uni.showModal({
+      title: '申请取消订单',
+      editable: true,
+      placeholderText: '填写取消原因（选填）',
+      success: async (res) => {
+        if (!res.confirm) return
+        if (cancelling.value) return
+        cancelling.value = true
+        uni.showLoading({ title: '提交中...', mask: true })
+        try {
+          await request({
+            url: `/orders/${order.id}/cancel-request`,
+            method: 'POST',
+            data: { reason: (res.content || '').trim() },
+          })
+          uni.hideLoading()
+          uni.showToast({ title: '已提交，等待商户审核', icon: 'none' })
+          await reload()
+        } catch (err) {
+          uni.hideLoading()
+          uni.showToast({ title: err.message || '提交失败', icon: 'none' })
+          // 后端可能已改过申请状态（如已被审核掉），刷新避免与后端脱节
+          await reload()
+        } finally {
+          cancelling.value = false
+        }
+      },
+    })
+  }
+
+  // 取消申请的结果提示：让用户知道当前在哪一步，被驳回也看得到原因
+  function cancelRequestHint(order) {
+    if (order.cancel_request_status === 'pending') return '取消申请审核中，商户同意后退款项'
+    if (order.cancel_request_status === 'rejected') {
+      return `取消申请已被驳回${order.cancel_request_note ? `：${order.cancel_request_note}` : ''}`
+    }
+    return ''
+  }
+
   function orderEditReason(order) {
+    if (order.cancel_request_status === 'pending') return '取消申请审核中，不能修改'
     if (order.can_edit) return '每天22:00前可修改'
     if (order.status === 'delivering') return '订单配送中，不能修改'
     if (order.status === 'completed') return '订单已完成，不能修改'
@@ -82,5 +128,16 @@ export function createOrderActions({ onChanged } = {}) {
     return `${order.province || ''}${order.city || ''}${order.district || ''}${order.detail_address || ''}`
   }
 
-  return { paying, cancelling, payOrderNow, cancelOrder, canCancel, orderEditReason, addressText }
+  return {
+    paying,
+    cancelling,
+    payOrderNow,
+    cancelOrder,
+    canCancel,
+    canRequestCancel,
+    requestCancel,
+    cancelRequestHint,
+    orderEditReason,
+    addressText,
+  }
 }

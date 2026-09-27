@@ -421,4 +421,10 @@ onMounted(load)
   font-size: 12px;
   line-height: 1.6;
 }
+
+@media (max-width: 768px) {
+  .perm-group {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 </style>

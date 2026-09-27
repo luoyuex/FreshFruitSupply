@@ -7,12 +7,13 @@ export const fetchMe = () => http.get('/admin/me')
 // ---- 订单 ----
 export const listOrders = (params) => http.get('/admin/orders', { params })
 export const deliverySheet = (params) => http.get('/admin/delivery-sheet', { params })
-export const updateOrderStatus = (orderId, status) => http.patch(`/admin/orders/${orderId}`, { status })
+export const updateOrderStatus = (orderId, status, refund = true) => http.patch(`/admin/orders/${orderId}`, { status, refund })
 export const bulkUpdateOrderStatus = (orderIds, status) => (
   http.patch('/admin/orders/bulk-status', { order_ids: orderIds, status })
 )
 export const listOrderPayments = (orderId) => http.get(`/admin/orders/${orderId}/payments`)
 export const refundOrder = (orderId, data) => http.post(`/admin/orders/${orderId}/refund`, data)
+export const reviewCancelRequest = (orderId, data) => http.post(`/admin/orders/${orderId}/cancel-request`, data)
 export const resendOrderNotice = (orderId, kind) => http.post(`/admin/orders/${orderId}/notify/${kind}`)
 
 // ---- 销售统计 ----

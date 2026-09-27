@@ -236,6 +236,13 @@ class OrderOut(BaseModel):
     detail_address: str
     delivery_note: str | None = None
     email_notify_status: str
+    # 已确认订单的取消申请：pending/approved/rejected，为空表示没申请过
+    cancel_request_status: str | None = None
+    cancel_request_reason: str | None = None
+    cancel_request_note: str | None = None
+    cancel_requested_at: datetime | None = None
+    # 上次取消失败的原因；为空表示没有待处理的取消失败
+    cancel_error: str | None = None
     can_edit: bool = False
     created_at: datetime
     items: List[OrderItemOut]
@@ -288,6 +295,8 @@ class MockPaySuccessIn(BaseModel):
 
 class OrderStatusUpdate(BaseModel):
     status: str = Field(pattern='^(unpaid|pending|confirmed|delivering|completed|closed|cancelled)$')
+    # 置为「已取消」时是否原路退款。微信退不了的单（原交易查不到/超期）可传 false 只关单
+    refund: bool = True
 
 
 class OrderBulkStatusUpdate(OrderStatusUpdate):
@@ -313,6 +322,17 @@ class OrderRefundIn(BaseModel):
     """后台退款请求：payment_id 留空表示退该订单全部已支付流水；reason 写进微信退款描述。"""
     payment_id: int | None = None
     reason: str | None = Field(default=None, max_length=80)
+
+
+class OrderCancelRequestIn(BaseModel):
+    """客户提交取消申请（已确认订单走审核，不直接退款）。"""
+    reason: str | None = Field(default=None, max_length=200)
+
+
+class OrderCancelReviewIn(BaseModel):
+    """商户审核取消申请：approve 会原路退款并置已取消，reject 只记驳回理由、订单不动。"""
+    decision: Literal['approve', 'reject']
+    note: str | None = Field(default=None, max_length=200)
 
 
 class CouponTemplateOut(BaseModel):

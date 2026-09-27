@@ -34,26 +34,32 @@ CANCELLED_STATUS = 'cancelled'
 CLOSED_STATUS = 'closed'
 
 
-def refund_order(db: Session, order: Order) -> None:
-    """退掉订单下所有已成功的支付流水，原路退款。
+def refund_order(db: Session, order: Order) -> Decimal:
+    """退掉订单下所有已成功的支付流水，原路退款，返回**实际退回**的金额。
 
     对每笔 success 流水调用微信退款，成功后标记为 refunded 并回写 refund_id；
     退款金额从 order.paid_amount 扣减。调用方负责设置订单最终状态与提交事务。
     Mock 模式下退款直接视为成功。
+
+    微信接入前的存量订单 paid_amount 是迁移脚本回填的、底下并没有流水，此时实际退回 0。
+    调用方必须用返回值而不是 paid_amount 来对外说退了多少钱，否则会把「一分没退」讲成「已退款」。
     """
     success_payments = (
         db.query(OrderPayment)
         .filter(OrderPayment.order_id == order.id, OrderPayment.status == 'success')
         .all()
     )
+    refunded = Decimal('0')
     for payment in success_payments:
         result = wechatpay.refund(payment)
         payment.status = 'refunded'
         payment.refund_id = result.get('refund_id')
         payment.refunded_at = datetime.now()
         order.paid_amount = (order.paid_amount or Decimal('0')) - payment.amount
+        refunded += payment.amount
     if order.paid_amount < 0:
         order.paid_amount = Decimal('0')
+    return refunded
 
 
 def _close_pending_payments(db: Session, order: Order) -> bool:
@@ -86,22 +92,25 @@ def _is_paid_at_wechat(out_trade_no: str) -> bool:
         return False
 
 
-def cancel_order(db: Session, order: Order) -> Decimal:
-    """取消订单：已付款则原路退款并置 cancelled，未付款直接 closed。两者都释放占用的券。
+def cancel_order(db: Session, order: Order, refund: bool = True) -> Decimal:
+    """取消订单，返回实际退回的金额。
 
-    返回实际退回的金额（未付款订单为 0），供调用方决定是否通知商户。
-    供用户端与后台取消共用。调用方负责鉴权与提交事务。
+    已付款的置 cancelled，从未付款的先关微信侧预支付单再置 closed；两者都释放占用的券。
+    供用户端与后台取消共用，调用方负责鉴权与提交事务。
+
+    refund=False 只关单、不动钱，用于微信那边退不了的单（原交易查不到、超过 160 天、
+    商户号对不上）而款项已线下处理的情况——这类单硬走退款会抛异常，连带整个取消回滚，
+    订单就一直卡在原状态，看起来像「点了取消没反应」。
     """
-    refunded_amount = order.paid_amount or Decimal('0')
-    if refunded_amount > 0:
-        refund_order(db, order)
+    paid = order.paid_amount or Decimal('0')
+    refunded_amount = refund_order(db, order) if (refund and paid > 0) else Decimal('0')
+    if paid > 0:
         order.status = CANCELLED_STATUS
     else:
         if not _close_pending_payments(db, order):
             # 微信侧查单确认已支付：不能按未支付关单，否则会出现「本地已关、钱还没退」的脱节窗口。
             # 交给支付回调/主动查单结算（会自动原路退回），调用方收到报错后让用户稍后再试。
             raise HTTPException(status_code=409, detail='订单支付状态确认中，请稍后再试或联系客服')
-        refunded_amount = Decimal('0')
         order.status = CLOSED_STATUS
     release_order_coupons(db, order)
     return refunded_amount

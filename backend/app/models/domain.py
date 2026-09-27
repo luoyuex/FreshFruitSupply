@@ -178,6 +178,14 @@ class Order(TimestampMixin, Base):
     payable_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
     # 已成功支付累计（首付 + 补差价）；与 payable_total 的差额即当前待补款金额
     paid_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
+    # 已确认订单的取消申请：pending=待商户审核 / approved=已同意（退款并置 cancelled）/ rejected=已驳回
+    cancel_request_status: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    cancel_request_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 驳回时写给用户的理由
+    cancel_request_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 上次取消失败的原因（多为微信退款报错）。取消成功后清空；失败时状态未变，靠这一列让后台看得见
+    cancel_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     customer: Mapped[Customer] = relationship(back_populates='orders')
     items: Mapped[list['OrderItem']] = relationship(back_populates='order', cascade='all, delete-orphan')
@@ -188,8 +196,13 @@ class Order(TimestampMixin, Base):
     def can_edit(self) -> bool:
         # 已付款待确认/已确认的订单可在 22:00 前编辑（编辑只增不减，加量走补差价）。
         # 待支付订单不走编辑入口，应先完成支付。
+        # 取消申请待审核时冻结改单：否则商户审核时看到的明细已不是用户申请那一份。
         now = datetime.now(CHINA_TZ).time()
-        return self.status in {'pending', 'confirmed'} and now < time(22, 0)
+        return (
+            self.status in {'pending', 'confirmed'}
+            and now < time(22, 0)
+            and self.cancel_request_status != 'pending'
+        )
 
 
 class OrderItem(Base):

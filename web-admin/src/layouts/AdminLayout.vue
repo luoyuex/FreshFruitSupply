@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from 'vuex'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -12,6 +12,32 @@ const store = useStore()
 
 const navItems = computed(() => store.getters.navItems)
 const admin = computed(() => store.state.admin)
+
+// 窄屏下侧边栏改成抽屉：手机上 200px 常驻侧栏会吃掉大半屏宽
+const MOBILE_QUERY = '(max-width: 768px)'
+const isMobile = ref(false)
+const menuOpen = ref(false)
+let mediaQuery = null
+
+function syncViewport(event) {
+  isMobile.value = event.matches
+  if (!event.matches) menuOpen.value = false
+}
+
+onMounted(() => {
+  mediaQuery = window.matchMedia(MOBILE_QUERY)
+  syncViewport(mediaQuery)
+  mediaQuery.addEventListener('change', syncViewport)
+})
+
+onBeforeUnmount(() => {
+  mediaQuery?.removeEventListener('change', syncViewport)
+})
+
+// 换页后收起抽屉，否则点完菜单还压在新页面上
+watch(() => route.path, () => {
+  menuOpen.value = false
+})
 
 const passwordDialog = ref(false)
 const changing = ref(false)
@@ -60,7 +86,7 @@ async function onCommand(command) {
 
 <template>
   <el-container class="shell">
-    <el-aside width="200px" class="aside">
+    <el-aside width="200px" class="aside" :class="{ open: menuOpen }">
       <div class="brand">鲜果供应后台</div>
       <el-menu :default-active="route.path" router class="menu">
         <el-menu-item v-for="item in navItems" :key="item.path" :index="item.path">
@@ -69,8 +95,10 @@ async function onCommand(command) {
         </el-menu-item>
       </el-menu>
     </el-aside>
+    <div v-if="isMobile && menuOpen" class="nav-mask" @click="menuOpen = false"></div>
     <el-container>
       <el-header class="header">
+        <button v-if="isMobile" class="menu-btn" @click="menuOpen = true">菜单</button>
         <div class="title">{{ route.meta.title }}</div>
         <el-dropdown @command="onCommand">
           <span class="account">
@@ -167,5 +195,56 @@ async function onCommand(command) {
 .main {
   padding: 0;
   overflow-y: auto;
+}
+
+.menu-btn {
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  color: #303133;
+  background: #fff;
+  font-size: 13px;
+}
+
+.nav-mask {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1999;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+@media (max-width: 768px) {
+  .aside {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 2000;
+    width: 220px !important;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+  }
+
+  .aside.open {
+    transform: translateX(0);
+    box-shadow: 0 0 30px rgba(0, 0, 0, 0.3);
+  }
+
+  .header {
+    padding: 0 10px;
+  }
+
+  .title {
+    flex: 1 1 auto;
+    margin-left: 8px;
+  }
+
+  .account {
+    font-size: 13px;
+  }
 }
 </style>

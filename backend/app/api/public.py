@@ -14,11 +14,12 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.models import Announcement, Customer, CustomerAddress, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, OrderItem, OrderPayment
 from app.models.domain import CHINA_TZ
-from app.schemas import AnnouncementFeedOut, AnnouncementOut, AnnouncementReadOut, CommonPayParams, CustomerAddressOut, CustomerAddressUpsert, CustomerCouponOut, CustomerOut, CustomerProfileUpdate, DeliveryConfigOut, FrequentItemOut, FruitCategoryOut, FruitOut, MockPaySuccessIn, OrderCreate, OrderEditResult, OrderOut, PayResponse, QuoteOut, VerificationOut
+from app.schemas import AnnouncementFeedOut, AnnouncementOut, AnnouncementReadOut, CommonPayParams, CustomerAddressOut, CustomerAddressUpsert, CustomerCouponOut, CustomerOut, CustomerProfileUpdate, DeliveryConfigOut, FrequentItemOut, FruitCategoryOut, FruitOut, MockPaySuccessIn, OrderCancelRequestIn, OrderCreate, OrderEditResult, OrderOut, PayResponse, QuoteOut, VerificationOut
 from app.services.coupon import attach_reissue_coupons, compute_discount, effective_coupon_status, grant_coupons_on_verified, release_order_coupons
 from app.services.customer import get_or_create_customer
 from app.services.settings import compute_delivery_fee, get_delivery_config
 from app.services.email import (
+    KIND_CANCEL_REQUEST,
     KIND_DISPATCH,
     KIND_REFUND_CUSTOMER,
     KIND_STRAY_PAYMENT,
@@ -79,6 +80,9 @@ def _is_before_order_edit_cutoff() -> bool:
 def _assert_order_editable(order: Order) -> None:
     if order.status not in EDITABLE_ORDER_STATUSES:
         raise HTTPException(status_code=400, detail='Order cannot be edited in current status')
+    if order.cancel_request_status == 'pending':
+        # 客户端的 can_edit 只是置灰，这里必须拦：否则商户审核时看到的明细已不是申请那一份
+        raise HTTPException(status_code=400, detail='取消申请审核中，暂不能修改订单')
     if not _is_before_order_edit_cutoff():
         raise HTTPException(status_code=400, detail='每日22:00后不能修改订单')
 
@@ -962,8 +966,8 @@ async def cancel_my_order(
     """用户取消自己的订单。
 
     只允许商户尚未确认的订单（待支付/待确认）自助取消：已付款则原路退款并置 cancelled，
-    待支付订单直接关闭。商户已确认及之后的订单须联系客服，避免商户备货后被单方面退单。
-    退款会邮件通知商户。取消后释放占用的优惠券。
+    待支付订单直接关闭。商户已确认后要走「申请取消 + 后台审核」（见 cancel-request），
+    避免商户备货后被单方面退单；配送中及之后不可取消。退款会邮件通知商户，并释放占用的券。
     """
     customer = _current_customer_or_401(auth_customer)
     order = (
@@ -975,7 +979,8 @@ async def cancel_my_order(
     if not order:
         raise HTTPException(status_code=404, detail='Order not found')
     if order.status not in {'unpaid', 'pending'}:
-        raise HTTPException(status_code=400, detail='当前订单状态不可自助取消，请联系客服')
+        hint = '，请提交取消申请等待商户审核' if order.status == 'confirmed' else '，请联系客服'
+        raise HTTPException(status_code=400, detail=f'当前订单状态不可自助取消{hint}')
     refunded_amount = cancel_order(db, order)
     db.commit()
     db.refresh(order)
@@ -984,6 +989,36 @@ async def cancel_my_order(
     else:
         # 未付款的取消不退钱、不发信，但补送券明细仍要随响应返回
         attach_reissue_coupons(db, [order])
+    return order
+
+
+@router.post('/orders/{order_id}/cancel-request', response_model=OrderOut)
+async def request_cancel_order(
+    order_id: int,
+    payload: OrderCancelRequestIn,
+    db: Session = Depends(get_db),
+    auth_customer: Customer | None = Depends(get_optional_auth_customer),
+):
+    """已确认的订单提交取消申请，等商户审核；审核通过才退款。
+
+    商户确认后可能已在备货，所以不像待确认那样直接退。审核期间订单冻结改单，
+    被驳回后可再次提交（四列整体覆盖为最新一次，不保留历史）。提交即邮件提醒商户。
+    """
+    customer = _current_customer_or_401(auth_customer)
+    order = db.query(Order).filter(Order.id == order_id, Order.customer_id == customer.id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail='Order not found')
+    if order.status != 'confirmed':
+        raise HTTPException(status_code=400, detail='仅已确认的订单需要提交取消申请')
+    if order.cancel_request_status == 'pending':
+        raise HTTPException(status_code=400, detail='取消申请正在审核中，请耐心等待')
+    order.cancel_request_status = 'pending'
+    order.cancel_request_reason = (payload.reason or '').strip() or None
+    order.cancel_request_note = None
+    order.cancel_requested_at = datetime.now()
+    db.commit()
+    db.refresh(order)
+    await notify_merchant(db, order, KIND_CANCEL_REQUEST)
     return order
 
 

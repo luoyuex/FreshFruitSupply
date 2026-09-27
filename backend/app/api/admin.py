@@ -12,7 +12,7 @@ from app.api.deps import ALL_PERMISSIONS, admin_permissions, get_current_admin, 
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db.session import get_db
 from app.models import Admin, Announcement, CouponTemplate, Customer, CustomerCoupon, CustomerVerification, Fruit, FruitCategory, Order, OrderNotification, OrderPayment, PriceQuote
-from app.schemas import AdminAuthOut, AdminEntryVisibleOut, AdminLogin, AdminOut, AdminPasswordUpdate, AdminSelfPasswordUpdate, AdminUpsert, AnnouncementOut, AnnouncementUpsert, CouponGrantIn, CouponTemplateOut, CouponTemplateUpsert, CustomerAdminOut, CustomerCouponOut, DeliveryConfigOut, DeliveryConfigUpdate, FruitCategoryOut, FruitCategoryUpsert, FruitOut, FruitUpsert, OrderBulkStatusUpdate, OrderNotificationOut, OrderOut, OrderPaymentOut, OrderRefundIn, OrderStatusUpdate, SalesStatsOut, VerificationReview
+from app.schemas import AdminAuthOut, AdminEntryVisibleOut, AdminLogin, AdminOut, AdminPasswordUpdate, AdminSelfPasswordUpdate, AdminUpsert, AnnouncementOut, AnnouncementUpsert, CouponGrantIn, CouponTemplateOut, CouponTemplateUpsert, CustomerAdminOut, CustomerCouponOut, DeliveryConfigOut, DeliveryConfigUpdate, FruitCategoryOut, FruitCategoryUpsert, FruitOut, FruitUpsert, OrderBulkStatusUpdate, OrderCancelReviewIn, OrderNotificationOut, OrderOut, OrderPaymentOut, OrderRefundIn, OrderStatusUpdate, SalesStatsOut, VerificationReview
 from app.services.coupon import attach_reissue_coupons, effective_coupon_status, grant_coupon_to_customer
 from app.services.email import KIND_REFUND_ADMIN, NOTIFY_KINDS
 from app.services.order_maintenance import cancel_order
@@ -281,6 +281,23 @@ def delivery_sheet(
     return orders
 
 
+def _cancel_or_record_error(db: Session, order: Order, refund: bool) -> Decimal:
+    """取消订单；退款失败时把原因留在订单上，再把原始错误抛出去。
+
+    取消与退款绑在同一个事务里，微信一报错状态改动会整体回滚，订单看着「点了取消没反应」。
+    所以先回滚掉半截改动、单独提交一条 cancel_error，再原样抛出，让列表能常驻显示失败原因。
+    """
+    try:
+        refunded = cancel_order(db, order, refund=refund)
+    except HTTPException as exc:
+        db.rollback()
+        order.cancel_error = str(exc.detail)[:300]
+        db.commit()
+        raise
+    order.cancel_error = None
+    return refunded
+
+
 @router.patch('/orders/bulk-status', response_model=list[OrderOut])
 async def bulk_update_order_status(
     payload: OrderBulkStatusUpdate,
@@ -298,19 +315,20 @@ async def bulk_update_order_status(
     missing_ids = [order_id for order_id in payload.order_ids if order_id not in found_ids]
     if missing_ids:
         raise HTTPException(status_code=404, detail=f'Orders not found: {missing_ids}')
-    refunded: list[tuple[Order, Decimal]] = []
+    cancelled: list[tuple[Order, Decimal]] = []
     for order in orders:
         if payload.status == 'cancelled' and order.status not in ('cancelled', 'closed'):
             # 取消时由 cancel_order 决定终态：已付款→退款并置 cancelled，未付款→置 closed
-            refunded.append((order, cancel_order(db, order)))
+            cancelled.append((order, _cancel_or_record_error(db, order, payload.refund)))
         else:
             order.status = payload.status
     db.commit()
     for order in orders:
         db.refresh(order)
     attach_reissue_coupons(db, orders)
-    for order, amount in refunded:
-        if amount > 0:
+    for order, amount in cancelled:
+        # 收过钱的单才通知配货停手；仅关单（refund=false）退的是 0 元，但同样要停手
+        if amount > 0 or order.paid_amount:
             await notify_merchant(db, order, KIND_REFUND_ADMIN, amount)
     return sorted(orders, key=lambda item: payload.order_ids.index(item.id))
 
@@ -326,14 +344,18 @@ async def update_order_status(
     if not order:
         raise HTTPException(status_code=404, detail='Order not found')
     refunded_amount = Decimal('0')
+    cancelled_now = False
     if payload.status == 'cancelled' and order.status != 'cancelled':
-        # 取消已付款订单会原路退款；未付款订单直接关闭。cancel_order 内部据 paid_amount 决定终态。
-        refunded_amount = cancel_order(db, order)
+        # 取消已付款订单会原路退款；payload.refund=false 只关单，用于微信退不了的单。
+        refunded_amount = _cancel_or_record_error(db, order, payload.refund)
+        cancelled_now = True
+        if order.cancel_request_status == 'pending':
+            order.cancel_request_status = 'approved'  # 后台直接取消，等于顺带同意了客户的申请
     else:
         order.status = payload.status
     db.commit()
     db.refresh(order)
-    if refunded_amount > 0:
+    if cancelled_now and (refunded_amount > 0 or order.paid_amount):
         # 已付款订单在后台被取消，配货的人必须收到停手通知，否则照常发货
         await notify_merchant(db, order, KIND_REFUND_ADMIN, refunded_amount)
     attach_reissue_coupons(db, [order])
@@ -389,20 +411,70 @@ async def refund_order_payments(
         raise HTTPException(status_code=400, detail='没有可退款的已支付流水')
 
     now = datetime.now()
-    for payment in payments:
-        if payment.refunded_at and now - payment.refunded_at < REFUND_MIN_INTERVAL:
-            raise HTTPException(status_code=400, detail='同一笔退款间隔须大于1分钟，请稍后再试')
-        result = refund_at_wechat(payment, description=(payload.reason or '后台退款').strip() or '后台退款')
-        payment.status = 'refunded'
-        payment.refund_id = result.get('refund_id')
-        payment.refunded_at = now
-        order.paid_amount = max(Decimal('0'), (order.paid_amount or Decimal('0')) - payment.amount)
+    try:
+        for payment in payments:
+            if payment.refunded_at and now - payment.refunded_at < REFUND_MIN_INTERVAL:
+                raise HTTPException(status_code=400, detail='同一笔退款间隔须大于1分钟，请稍后再试')
+            result = refund_at_wechat(payment, description=(payload.reason or '后台退款').strip() or '后台退款')
+            payment.status = 'refunded'
+            payment.refund_id = result.get('refund_id')
+            payment.refunded_at = now
+            order.paid_amount = max(Decimal('0'), (order.paid_amount or Decimal('0')) - payment.amount)
+    except HTTPException as exc:
+        # 微信报错会让整批流水回滚，页面刷新后看不出任何痕迹，故把原因落到订单上再抛出
+        db.rollback()
+        order.cancel_error = str(exc.detail)[:300]
+        db.commit()
+        raise
+    order.cancel_error = None
     db.commit()
     for payment in payments:
         db.refresh(payment)
 
     await notify_merchant(db, order, KIND_REFUND_ADMIN, sum((p.amount for p in payments), Decimal('0')))
     return payments
+
+
+@router.post('/orders/{order_id}/cancel-request', response_model=OrderOut)
+async def review_cancel_request(
+    order_id: int,
+    payload: OrderCancelReviewIn,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(require_admin_permission('orders')),
+):
+    """审核客户提交的取消申请（仅「已确认」订单会有）。
+
+    同意：原路退款、置已取消并释放占用的券（与后台直接取消同一套 cancel_order），
+    再发退款邮件让配货的人停手。驳回：只记理由，订单状态不动、继续配货，客户可再次申请。
+    """
+    order = (
+        db.query(Order)
+        .options(joinedload(Order.items))
+        .filter(Order.id == order_id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail='Order not found')
+    if order.cancel_request_status != 'pending':
+        raise HTTPException(status_code=400, detail='该订单没有待审核的取消申请')
+    note = (payload.note or '').strip() or None
+    if payload.decision == 'reject':
+        order.cancel_request_status = 'rejected'
+        order.cancel_request_note = note
+        db.commit()
+        db.refresh(order)
+        attach_reissue_coupons(db, [order])
+        return order
+    refunded_amount = _cancel_or_record_error(db, order, refund=True)
+    order.cancel_request_status = 'approved'
+    order.cancel_request_note = note
+    db.commit()
+    db.refresh(order)
+    if refunded_amount > 0 or order.paid_amount:
+        await notify_merchant(db, order, KIND_REFUND_ADMIN, refunded_amount)
+    else:
+        attach_reissue_coupons(db, [order])
+    return order
 
 
 @router.post('/orders/{order_id}/notify/{kind}', response_model=list[OrderNotificationOut])

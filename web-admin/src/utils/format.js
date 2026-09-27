@@ -150,7 +150,18 @@ export const NOTICE_KINDS = [
   { value: 'refund_customer', label: '客户取消退款' },
   { value: 'refund_admin', label: '后台退款' },
   { value: 'stray_payment', label: '关单后到账退回' },
+  { value: 'cancel_request', label: '取消申请待审核' },
 ]
+
+export const CANCEL_REQUEST_LABELS = {
+  pending: '取消申请审核中',
+  approved: '取消申请已同意',
+  rejected: '取消申请已驳回',
+}
+
+export function cancelRequestLabel(status) {
+  return CANCEL_REQUEST_LABELS[status] || ''
+}
 
 export function noticeLabel(kind) {
   return NOTICE_KINDS.find((item) => item.value === kind)?.label || kind

@@ -58,8 +58,17 @@ async function loadOrders() {
 }
 
 // 支付/取消等操作与详情页共用，操作成功后刷新列表
-const { paying, payOrderNow, cancelOrder, canCancel, orderEditReason, addressText } =
-  createOrderActions({ onChanged: loadOrders })
+const {
+  paying,
+  payOrderNow,
+  cancelOrder,
+  canCancel,
+  canRequestCancel,
+  requestCancel,
+  cancelRequestHint,
+  orderEditReason,
+  addressText,
+} = createOrderActions({ onChanged: loadOrders })
 
 function switchStatus(status) {
   activeStatus.value = status
@@ -152,10 +161,11 @@ onPullDownRefresh(async () => {
           <view v-if="Number(order.discount_amount) > 0" class="saved-line">已优惠 ¥{{ money(order.discount_amount) }} · 原价 ¥{{ money(order.estimated_total) }}</view>
           <view v-if="Number(order.delivery_fee) > 0" class="fee-line">含配送费 ¥{{ money(order.delivery_fee) }}</view>
           <view v-if="order.status === 'unpaid'" class="edit-hint">超时未支付将自动关闭</view>
-          <view v-else class="edit-hint">{{ orderEditReason(order) }}</view>
+          <view v-else class="edit-hint">{{ cancelRequestHint(order) || orderEditReason(order) }}</view>
         </view>
         <view class="order-actions">
           <button v-if="canCancel(order)" class="cancel-order" @tap.stop="cancelOrder(order)">取消订单</button>
+          <button v-else-if="canRequestCancel(order)" class="cancel-order" @tap.stop="requestCancel(order)">申请取消</button>
           <button v-if="order.status === 'unpaid'" class="pay-order" :loading="paying" :disabled="paying" @tap.stop="payOrderNow(order)">去支付</button>
           <button v-else-if="order.status !== 'completed'" class="edit-order" :class="{ disabled: !order.can_edit }" @tap.stop="editOrder(order)">修改订单</button>
           <button v-if="order.status === 'completed'" class="after-sale-btn" @tap.stop="openAfterSale">售后</button>

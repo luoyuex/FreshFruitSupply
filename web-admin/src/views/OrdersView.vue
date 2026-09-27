@@ -8,12 +8,14 @@ import {
   listOrders,
   refundOrder,
   resendOrderNotice,
+  reviewCancelRequest,
   updateOrderStatus,
 } from '../api'
 import {
   ORDER_STATUSES,
   ORDER_TARGET_STATUSES,
   addressText,
+  cancelRequestLabel,
   dateTimeSec,
   isoDate,
   money,
@@ -28,6 +30,8 @@ const activeTab = ref('list')
 const date = ref(isoDate())
 const status = ref('')
 const keyword = ref('')
+// 只看待审核的取消申请；申请本身不改订单状态，故不能靠状态筛选出来
+const cancelFilter = ref('')
 const loading = ref(false)
 const orders = ref([])
 const sheet = ref([])
@@ -41,14 +45,19 @@ const paymentsLoading = ref(false)
 const refunding = ref(false)
 // 正在重发的通知，用「订单:类型」定位到具体那一个按钮
 const resendingKey = ref('')
+const reviewing = ref(false)
 
 const filteredOrders = computed(() => {
+  let list = orders.value
+  if (cancelFilter.value === 'pending') list = list.filter((order) => order.cancel_request_status === 'pending')
   const word = keyword.value.trim().toLowerCase()
-  if (!word) return orders.value
-  return orders.value.filter((order) => (
+  if (!word) return list
+  return list.filter((order) => (
     [order.order_no, order.receiver_name, order.receiver_phone, addressText(order)].join(' ').toLowerCase().includes(word)
   ))
 })
+
+const pendingCancelCount = computed(() => orders.value.filter((order) => order.cancel_request_status === 'pending').length)
 
 const refundablePayments = computed(() => payments.value.filter((item) => item.status === 'success'))
 const refundableAmount = computed(() => refundablePayments.value.reduce((sum, item) => sum + Number(item.amount), 0))
@@ -124,6 +133,27 @@ async function bulkTo(next) {
     await loadOrders()
   } catch (error) {
     ElMessage.error(error.message)
+  }
+}
+
+// 微信退不了的单（原交易查不到、超期）只能只关单，款项线下自行处理
+async function closeWithoutRefund(order) {
+  try {
+    await ElMessageBox.confirm(
+      `订单将置为「已取消」但不发起退款，已收 ¥${money(order.paid_amount)} 需你线下自行处理。确认？`,
+      '仅关单不退款',
+      { type: 'warning', confirmButtonText: '确认关单' },
+    )
+  } catch (error) {
+    return
+  }
+  try {
+    await updateOrderStatus(order.id, 'cancelled', false)
+    ElMessage.success('已关单')
+    await loadOrders()
+  } catch (error) {
+    ElMessage.error(error.message)
+    await loadOrders()
   }
 }
 
@@ -216,6 +246,52 @@ async function doResend(order, kind) {
   }
 }
 
+// 同意取消会真退款并关单，不可逆，所以保留二次确认
+async function approveCancel(order) {
+  try {
+    await ElMessageBox.confirm(
+      `同意后将原路退回 ¥${money(order.paid_amount)}，订单置为「已取消」并释放占用的券，确认？`,
+      '同意取消申请',
+      { type: 'warning' },
+    )
+  } catch (error) {
+    return
+  }
+  reviewing.value = true
+  try {
+    await reviewCancelRequest(order.id, { decision: 'approve' })
+    ElMessage.success('已同意并发起退款')
+    await loadOrders()
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    reviewing.value = false
+  }
+}
+
+async function rejectCancel(order) {
+  let note = ''
+  try {
+    const input = await ElMessageBox.prompt('驳回理由会显示给用户', '驳回取消申请', {
+      inputPlaceholder: '例如：商品已备货，无法取消',
+      inputValue: '商品已备货，无法取消',
+    })
+    note = (input.value || '').trim()
+  } catch (error) {
+    return
+  }
+  reviewing.value = true
+  try {
+    await reviewCancelRequest(order.id, { decision: 'reject', note: note || null })
+    ElMessage.success('已驳回，订单继续配货')
+    await loadOrders()
+  } catch (error) {
+    ElMessage.error(error.message)
+  } finally {
+    reviewing.value = false
+  }
+}
+
 async function copySheet() {
   const text = sheet.value.map((order) => (
     `${order.order_no} ${statusLabel(order.status)}\n${order.receiver_name} ${order.receiver_phone}\n${addressText(order)}\n` +
@@ -258,6 +334,9 @@ onMounted(loadOrders)
         <el-option v-for="item in ORDER_STATUSES" :key="item" :label="statusLabel(item)" :value="item" />
       </el-select>
       <el-input v-if="activeTab === 'list'" v-model="keyword" placeholder="搜索订单号/收货人/电话/地址" clearable style="width: 240px" />
+      <el-select v-if="activeTab === 'list'" v-model="cancelFilter" placeholder="取消申请" clearable style="width: 150px">
+        <el-option :label="`仅看待审核（${pendingCancelCount}）`" value="pending" />
+      </el-select>
       <el-button :loading="loading" @click="reloadCurrentView">刷新</el-button>
     </div>
 
@@ -286,6 +365,18 @@ onMounted(loadOrders)
               <div v-if="row.delivery_note" class="item-line">
                 <span>配送备注</span>
                 <span>{{ row.delivery_note }}</span>
+              </div>
+              <div v-if="row.cancel_error" class="item-line danger-text">
+                <span>上次取消失败</span>
+                <span>{{ row.cancel_error }}</span>
+              </div>
+              <div v-if="row.cancel_request_status" class="item-line cancel-request">
+                <span>{{ cancelRequestLabel(row.cancel_request_status) }}</span>
+                <span>
+                  理由：{{ row.cancel_request_reason || '未填写' }}
+                  <template v-if="row.cancel_request_note"> · 商户回复：{{ row.cancel_request_note }}</template>
+                  <template v-if="row.cancel_requested_at"> · {{ dateTimeSec(row.cancel_requested_at) }}</template>
+                </span>
               </div>
               <div v-for="notice in row.notifications || []" :key="notice.kind" class="item-line notice-log">
                 <span>{{ noticeLabel(notice.kind) }}</span>
@@ -323,6 +414,22 @@ onMounted(loadOrders)
         <el-table-column label="状态" width="210">
           <template #default="{ row }">
             <el-tag :type="statusTone(row.status)">{{ statusLabel(row.status) }}</el-tag>
+            <el-tooltip
+              v-if="row.cancel_request_status"
+              :content="`理由：${row.cancel_request_reason || '未填写'}${row.cancel_request_note ? ` ｜ 处理：${row.cancel_request_note}` : ''}`"
+              placement="top"
+            >
+              <div>
+                <el-tag :type="row.cancel_request_status === 'pending' ? 'warning' : 'info'" size="small">
+                  {{ cancelRequestLabel(row.cancel_request_status) }}
+                </el-tag>
+              </div>
+            </el-tooltip>
+            <div v-if="row.cancel_error" class="danger-text notice-line">
+              <el-tooltip :content="`上次取消失败原因：${row.cancel_error}`" placement="top">
+                <span>取消失败，状态未变</span>
+              </el-tooltip>
+            </div>
             <div
               v-for="notice in visibleNotices[row.id]"
               :key="notice.kind"
@@ -363,6 +470,13 @@ onMounted(loadOrders)
             <el-button size="small" type="danger" plain :disabled="!(Number(row.paid_amount) > 0)" @click="openDrawer(row)">
               退款
             </el-button>
+            <div v-if="row.cancel_request_status === 'pending'" class="review-actions">
+              <el-button size="small" type="success" plain :loading="reviewing" @click="approveCancel(row)">同意取消</el-button>
+              <el-button size="small" type="info" plain :loading="reviewing" @click="rejectCancel(row)">驳回</el-button>
+            </div>
+            <div v-else-if="row.cancel_error && Number(row.paid_amount) > 0" class="review-actions">
+              <el-button size="small" type="warning" plain @click="closeWithoutRefund(row)">仅关单不退款</el-button>
+            </div>
           </template>
         </el-table-column>
         <template #empty>
@@ -467,6 +581,14 @@ onMounted(loadOrders)
 .notice-line {
   margin-top: 4px;
   font-size: 12px;
+}
+
+.review-actions {
+  margin-top: 6px;
+}
+
+.cancel-request {
+  color: #b06a00;
 }
 
 .reissue {
