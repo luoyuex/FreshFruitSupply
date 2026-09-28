@@ -381,16 +381,30 @@ sudo systemctl status fruitquote --no-pager
 
 ### 回调连通性验证
 
-部署完成后，不必真实下单即可验证链路：
+部署完成后，不必真实下单即可验证路由与外网连通：
 
 ```bash
-curl -i -X POST https://zhenguolian.cn/api/payments/wechat/notify \
-  -H 'Content-Type: application/json' -d '{}'
+curl -i -X POST https://zhenguolian.cn/api/payments/b2b/notify \
+  -H 'Content-Type: application/json' -d '{"Event":"retail_pay_notify","out_trade_no":"probe","pay_status":"ORDER_PAY_SUCC"}'
 ```
 
-期望：HTTP 200 + `{"code":"FAIL","message":"验签失败"}`
+期望：HTTP **403**，正文 `fail`。403 说明三件事同时成立——路由已通、外网可达、支付通知验签在拦未带
+签名的请求。返回 301/302/404/502 先修 nginx；**返回 200 反而是错的**（等于回调可被任意人伪造），
+那说明跑的还是旧代码，先确认部署生效。
 
-拿到该结果说明路由已通、外网可达、nginx 未做跳转。若返回 301/302/404/502，先修 nginx 再谈下单。
+要完整跑通结算链路（带验签），用 mp 后台「消息推送」里配的 Token 现算签名：
+
+```bash
+TOKEN='消息推送 Token'
+TS=$(date +%s); NONCE=probe123
+SIG=$(printf '%s\n' "$TOKEN" "$TS" "$NONCE" | LC_ALL=C sort | tr -d '\n' | sha1sum | cut -d' ' -f1)
+curl -i -X POST "https://zhenguolian.cn/api/payments/b2b/notify?signature=$SIG&timestamp=$TS&nonce=$NONCE" \
+  -H 'Content-Type: application/json' -d '{"Event":"retail_pay_notify","out_trade_no":"probe","pay_status":"ORDER_PAY_SUCC"}'
+```
+
+签名正确时会回 `success`（`probe` 这笔流水本就不存在，不会动任何数据）。注意 `.env` 里
+`WECHAT_B2B_MSG_TOKEN` 为空时所有通知一律 403，日志会打 `WECHAT_B2B_MSG_TOKEN 未配置`；
+此时真实支付只能靠前端轮询 `/api/orders/{id}/pay/sync` 结算，务必把该项配上。
 
 ### 小程序侧配置
 

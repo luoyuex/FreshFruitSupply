@@ -1,5 +1,7 @@
+import asyncio
 import hashlib
 import json
+import logging
 from datetime import datetime, time
 from decimal import Decimal
 
@@ -28,10 +30,11 @@ from app.services.email import (
 from app.services.order_notify import notify_merchant
 from app.services.upload import save_upload, to_public_urls
 from app.services.wechat import code_to_session
-from app.services.wechatpay import close_order, create_common_payment, generate_out_trade_no, is_mock, query_order, refund
+from app.services.wechatpay import close_order, create_common_payment, generate_out_trade_no, is_mock, query_order, refund, yuan_to_fen
 from app.services.order_maintenance import cancel_order
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 ORDER_EDIT_CUTOFF = time(22, 0)
 EDITABLE_ORDER_STATUSES = {'pending', 'confirmed'}
 
@@ -737,7 +740,7 @@ async def _reconcile_pending_payment(db: Session, payment: OrderPayment) -> bool
     except HTTPException:
         result = {}
     if result.get('pay_status') == 'ORDER_PAY_SUCC':
-        await _settle_successful_payment(db, payment, result.get('wxpay_transaction_id'))
+        await _settle_successful_payment(db, payment, _txn_id(result))
         return True
     close_order(payment.out_trade_no)
     payment.status = 'cancelled'
@@ -860,17 +863,103 @@ def _b2b_msg_signature_ok(signature: str | None, timestamp: str | None, nonce: s
     return hashlib.sha1(raw.encode('utf-8')).hexdigest() == signature
 
 
+# _confirm_paid_at_wechat 的三种结论
+_PAY_CONFIRMED = 'confirmed'        # 微信查单确认已支付，可以结算
+_PAY_UNCONFIRMED = 'unconfirmed'    # 这一刻还不能结算，让微信按策略重试
+_PAY_AMOUNT_MISMATCH = 'mismatch'   # 已支付但金额与流水对不上，拒绝结算、留人工核对
+
+
+def _detail_reason(exc: HTTPException) -> str:
+    """取 HTTPException 里适合进日志的那一份（微信支付类错误带的是 {message, reason}）。"""
+    detail = exc.detail
+    if isinstance(detail, dict):
+        return str(detail.get('reason') or detail.get('message') or '')
+    return str(detail)
+
+
+def _txn_id(state: dict) -> str | None:
+    """查单返回里的微信支付单号叫 order_id，wxpay_transaction_id 是通知报文的字段名。"""
+    return state.get('order_id') or state.get('wxpay_transaction_id')
+
+
+# 查单 amount 里明确表示「实付金额（分）」的候选键名。只认这些键：B2b 下单请求体就是用
+# order_amount 传分的，同一套 API 的响应里这些键的量纲可信。
+_AMOUNT_FEN_KEYS = ('payer_total', 'total', 'total_fee', 'order_amount', 'pay_amount', 'paid_amount')
+
+
+def _query_amount_fen(state: dict) -> int | None:
+    """从查单返回里取实付金额（分），取不到返回 None 表示「这笔跳过金额核对」。
+
+    只认 dict 里的白名单键：裸数字判断不出量纲（21 可能是 21 元也可能是 21 分），按分去
+    核对就会把用户真金白银付成功的单挡在门外——那比放过一笔对不上号的金额难挽回得多。
+    B2b 查单的 amount 结构还没按真实报文核对过，解析不出来时日志会原样带出该结构，
+    确认字段后把白名单补齐即可让金额核对真正生效。
+    """
+    amount = state.get('amount')
+    if not isinstance(amount, dict):
+        return None
+    for key in _AMOUNT_FEN_KEYS:
+        value = amount.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    return None
+
+
+async def _confirm_paid_at_wechat(payment: OrderPayment, notified: dict) -> tuple[str, str | None]:
+    """结算前向微信查单确认这笔流水，返回 (_PAY_* 结论, 微信支付单号)。
+
+    通知报文是谁都能构造的（即便验签通过，也存在 Token 漏配、重放这类窗口），所以结算
+    依据一律以查单为准，通知只当「该去查单了」的信号。Mock 模式没有真实单可查，跳过。
+    """
+    if is_mock():
+        return _PAY_CONFIRMED, notified.get('wxpay_transaction_id')
+    try:
+        state = await asyncio.to_thread(query_order, payment.out_trade_no)
+    except HTTPException as exc:
+        logger.warning('支付通知结算前查单失败，等微信重试 out_trade_no=%s reason=%s', payment.out_trade_no, _detail_reason(exc))
+        return _PAY_UNCONFIRMED, None
+    if state.get('pay_status') != 'ORDER_PAY_SUCC':
+        logger.warning('通知称已支付但查单未确认 out_trade_no=%s 通知=%s 查单=%s',
+                       payment.out_trade_no, notified.get('pay_status'), state.get('pay_status'))
+        return _PAY_UNCONFIRMED, None
+    paid_fen = _query_amount_fen(state)
+    expected_fen = yuan_to_fen(payment.amount)
+    if paid_fen is None:
+        logger.warning('查单未返回可解析的金额，本笔跳过金额核对 out_trade_no=%s amount=%r', payment.out_trade_no, state.get('amount'))
+    elif paid_fen != expected_fen:
+        logger.error('实付金额与支付流水不符，已拒绝结算待人工核对 out_trade_no=%s 实付=%s分 流水=%s分',
+                     payment.out_trade_no, paid_fen, expected_fen)
+        return _PAY_AMOUNT_MISMATCH, _txn_id(state)
+    return _PAY_CONFIRMED, _txn_id(state)
+
+
 @router.api_route('/payments/b2b/notify', methods=['GET', 'POST'])
 async def b2b_pay_notify(request: Request, db: Session = Depends(get_db)):
     """B2b 支付/退款结果通知：走小程序「消息推送」机制（retail_pay_notify / retail_refund_notify）。
 
     GET：mp 后台保存消息推送配置时的 URL 有效性校验（echostr 回显）。
-    POST：事件推送，处理后必须回复 success 字符串，否则微信按策略重试。
+    POST：事件推送，与 GET 用同一套消息推送签名验签后才处理；处理后必须回复 success，
+    否则微信按策略重试。
+
+    验签是必须的：这个地址匿名可访问，不验签就等于把「这笔订单已付款」的判定权交给任何
+    能连到本站的人——构造一条 retail_pay_notify 就能让订单免付款进入待确认并触发配货邮件。
     """
     params = request.query_params
+    signature_ok = _b2b_msg_signature_ok(params.get('signature'), params.get('timestamp'), params.get('nonce'))
     if request.method == 'GET':
-        if _b2b_msg_signature_ok(params.get('signature'), params.get('timestamp'), params.get('nonce')):
+        if signature_ok:
             return PlainTextResponse(params.get('echostr') or '')
+        return PlainTextResponse('fail', status_code=403)
+
+    if not signature_ok:
+        if not settings.wechat_b2b_msg_token:
+            logger.error('WECHAT_B2B_MSG_TOKEN 未配置，支付/退款通知一律拒绝：请核对 mp 后台「消息推送」Token 与 .env 是否一致')
+        else:
+            logger.warning('支付/退款通知验签失败，已拒绝。query 参数=%s', sorted(params.keys()))
         return PlainTextResponse('fail', status_code=403)
 
     try:
@@ -887,8 +976,14 @@ async def b2b_pay_notify(request: Request, db: Session = Depends(get_db)):
     if not payment:
         return PlainTextResponse('success')
 
-    if event == 'retail_pay_notify' and data.get('pay_status') == 'ORDER_PAY_SUCC':
-        await _settle_successful_payment(db, payment, data.get('wxpay_transaction_id'))
+    if event == 'retail_pay_notify':
+        if data.get('pay_status') == 'ORDER_PAY_SUCC':
+            outcome, transaction_id = await _confirm_paid_at_wechat(payment, data)
+            # 未结算的两种情况都回非 success：钱的事不能让它在日志里静默过去，
+            # 未确认的等微信重试可能补上，金额不符的则靠反复重试把这笔钱顶在页面上
+            if outcome != _PAY_CONFIRMED:
+                return PlainTextResponse('fail', status_code=502)
+            await _settle_successful_payment(db, payment, transaction_id)
     elif event == 'retail_refund_notify':
         # REFUND_SUCC / REFUND_FAIL；退款只是受理时先不动状态，以本通知为准
         if data.get('refund_status') == 'REFUND_SUCC':
@@ -929,7 +1024,7 @@ async def sync_order_payment(
     for payment in pending_payments:
         result = query_order(payment.out_trade_no)
         if result.get('pay_status') == 'ORDER_PAY_SUCC':
-            await _settle_successful_payment(db, payment, result.get('wxpay_transaction_id'))
+            await _settle_successful_payment(db, payment, _txn_id(result))
     db.refresh(order)
     attach_reissue_coupons(db, [order])
     return order
